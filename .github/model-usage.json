@@ -56,19 +56,15 @@
   },
   "mock_workflows": {
     "e2e.yml": "e2e",
-    "e2e-ui.yml": "e2e-ui",
     "integration.yml": "integration",
-    "server-compat.yml": "server-compat",
-    "flake-stress-ui.yml": "flake-stress-ui"
+    "server-compat.yml": "server-compat"
   },
   "non_model_workflows": [
-    "android-bundle.yml",
     "auto-assign-reviewer-test.yml",
     "autoformat-pr.yml",
     "benchmark-host.yml",
     "benchmark-pr.yml",
     "benchmark-release.yml",
-    "benchmark-ui.yml",
     "benchmark.yml",
     "bump-version.yml",
     "ci.yml",
@@ -129,16 +125,11 @@
     "sync-pr-priority-test.yml",
     "sync-pr-priority.yml",
     "trivy.yml",
-    "ui-preview.yml",
-    "ui-snapshot-fail-comment.yml",
-    "ui-snapshot-update.yml",
-    "ui-snapshot.yml",
     "vscode-extension-release.yml",
     "waiting-on-author-review-run.yml",
     "waiting-on-author-review.yml",
     "waiting-on-author-test.yml",
     "waiting-on-author.yml",
-    "web-tests.yml",
     "windows.yml"
   ],
   "exclusions": "Remaining workflows build, test with mocks, deploy, publish, or manage GitHub state without model credentials. Dispatch-only wrappers (including Polly approval dispatch) are accounted to the workflow they start. Databricks bundle jobs and deployed applications are outside GitHub workflow execution."

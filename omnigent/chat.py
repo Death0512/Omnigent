@@ -74,6 +74,7 @@ from omnigent.inner.databricks_executor import (
     _remember_profile,
     _ReusedDatabricksTokenSource,
 )
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
 from omnigent.native.native_coding_agents import native_coding_agent_for_wrapper_label
 from omnigent.native.native_dispatch import resolve_hook_for_key
 from omnigent.process_logging import (
@@ -182,7 +183,7 @@ def _default_cli_model() -> str:
     configured = os.environ.get(_OMNIGENT_MODEL_ENV_VAR)
     if configured is not None:
         return configured
-    return "gemini-3.8-flash-high"
+    return DEFAULT_ANTIGRAVITY_MODEL
 
 
 @dataclass(frozen=True)

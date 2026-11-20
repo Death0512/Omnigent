@@ -61,7 +61,10 @@ def check() -> list[str]:
     for name in sorted(filter(None, output.decode().split("\0"))):
         if not name.endswith((".yml", ".yaml")):
             continue
-        for lineno, label in floating_labels(Path(name).read_text()):
+        path = Path(name)
+        if not path.is_file():
+            continue
+        for lineno, label in floating_labels(path.read_text()):
             violations.append(f"{name}:{lineno}: floating runner image `{label}`")
     return violations
 

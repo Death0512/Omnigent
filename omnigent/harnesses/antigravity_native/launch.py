@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
 from omnigent.onboarding.gemini_auth import gemini_auth_has_credential
 
 _logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def resolve_native_antigravity_launch(
     if credentials is not None:
         return NativeAntigravityLaunch(
             auth_mode="api-key",
-            model=model if model is not None else (credentials.model or "gemini-3.8-flash-high"),
+            model=model if model is not None else (credentials.model or DEFAULT_ANTIGRAVITY_MODEL),
             extra_env=credentials.environment(),
         )
     if not gemini_auth_has_credential():
@@ -142,7 +143,7 @@ def resolve_native_antigravity_launch(
         )
     return NativeAntigravityLaunch(
         auth_mode="subscription",
-        model=model or "gemini-3.8-flash-high",
+        model=model or DEFAULT_ANTIGRAVITY_MODEL,
     )
 
 

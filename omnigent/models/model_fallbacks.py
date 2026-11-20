@@ -241,3 +241,31 @@ BACKGROUND_TITLE_CLAUDE_ECONOMY_MODEL = _BACKGROUND_TITLE_FALLBACKS["claude"].mo
 
 #: The codex-family arm background session titles pin.
 BACKGROUND_TITLE_CODEX_ECONOMY_MODEL = _BACKGROUND_TITLE_FALLBACKS["codex"].model_ids[0]
+
+# ── Antigravity & Symbiosis Model Fallbacks ─────────────────────────────────
+
+ANTIGRAVITY_DEFAULT_MODEL_FALLBACK = StaticModelFallback(
+    model_ids=("gemini-3.8-flash-high",),
+    owner="Antigravity default model (omnigent.chat, omnigent.cli, omnigent.inner)",
+    provenance="Default model for Google Antigravity harness when unspecified",
+    discovery_gap=(
+        "the default model tier must be statically known before live model catalog resolution"
+    ),
+)
+
+#: Primary default model for Antigravity sessions.
+DEFAULT_ANTIGRAVITY_MODEL = ANTIGRAVITY_DEFAULT_MODEL_FALLBACK.model_ids[0]
+
+SYMBIOSIS_MODELS = StaticModelFallback(
+    model_ids=(
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+        "claude-3-opus",
+        "claude-3-5-sonnet",
+        "claude-3-5-haiku",
+    ),
+    owner="Symbiosis Multi-Agent Orchestrator (examples.symbiosis)",
+    provenance="Antigravity and Claude Code hard-pinned model tiers per Rule 01",
+    discovery_gap="declarative multi-agent bundle YAML pinning model tiers across vendor CLIs",
+)

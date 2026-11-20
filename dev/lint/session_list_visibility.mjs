@@ -5,10 +5,23 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const require = createRequire(
-  new URL("../../web/package.json", import.meta.url),
-);
-const ts = require("typescript");
+function loadTypeScript() {
+  const candidates = [
+    "../../package.json",
+    "../../editors/vscode/package.json",
+    "../../node_modules/.pnpm/node_modules/typescript/package.json",
+  ];
+  for (const c of candidates) {
+    try {
+      return createRequire(new URL(c, import.meta.url))("typescript");
+    } catch {}
+  }
+  try {
+    return createRequire(import.meta.url)("typescript");
+  } catch {}
+  return null;
+}
+const ts = loadTypeScript();
 const UNKNOWN = "\u0000";
 const RULE = "session-list-visibility";
 const text = (value = UNKNOWN) => ({ strings: [value] });

@@ -86,7 +86,7 @@ class CliLogContext:
         ``"12345-a1b2c3"``.
     """
 
-    path: Path
+    path: Path | None
     invocation_id: str
 
 

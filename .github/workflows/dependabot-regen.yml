@@ -1,13 +1,8 @@
-# Repair a Dependabot PR's lockfiles automatically. Dependabot regenerates the
-# lockfile of the ecosystem it bumps, but not always completely: an npm bump can
-# arrive with only `web/package.json` changed, so `pnpm install
-# --frozen-lockfile` fails in CI and the auto-merge policy cannot classify the
-# PR. This runs the repair a maintainer's `/regen` comment performs
-# (oss-regen-on-comment.yml) on every Dependabot push, without the comment:
-# check both lockfiles and regenerate only what is inconsistent.
+# Repair a Dependabot PR's lockfile automatically.
+# Check uv.lock and regenerate only what is inconsistent.
 #
 # Split at the trust boundary into two workflows:
-#   - This one runs `uv lock` and `pnpm install --lockfile-only`, which can
+#   - This one runs `uv lock`, which can
 #     execute code from the updated dependencies (a build backend), and the
 #     PR's own setup actions. It runs on `pull_request`, so a Dependabot-
 #     triggered run gets a read-only token, no Actions secrets and a cache
@@ -65,20 +60,10 @@ jobs:
           enable-cache: false
           version: "0.13.4"
 
-      # No pnpm store cache: `--lockfile-only` never fills the store.
-      - name: Set up pnpm
-        uses: ./.github/actions/setup-pnpm
-        with:
-          cache: ""
-
-      # Check-first, per ecosystem, like the scheduled regen job: only a real
-      # manifest/lock desync is regenerated, so a PR whose lockfile is already
-      # consistent uploads nothing. Cooldowns come from uv.toml and
-      # pnpm-workspace.yaml, recorded as relative spans.
-      - name: Regenerate whichever lockfile is inconsistent
+      # Regenerate uv.lock when inconsistent
+      - name: Regenerate lockfile
         id: regen
         env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
           OUT: ${{ runner.temp }}/dependabot-regen
         run: |
           if ! uv lock --check; then
@@ -86,12 +71,9 @@ jobs:
             python3 scripts/normalize_uv_lock_registry.py uv.lock || true
             python3 scripts/normalize_uv_lock_registry.py --check uv.lock
           fi
-          if ! pnpm install --frozen-lockfile --lockfile-only; then
-            pnpm install --lockfile-only --ignore-scripts
-          fi
           mkdir -p "$OUT"
           changed=""
-          for lockfile in uv.lock pnpm-lock.yaml; do
+          for lockfile in uv.lock; do
             # --porcelain so a first-time UNTRACKED lockfile counts too.
             if [ -n "$(git status --porcelain -- "$lockfile")" ]; then
               cp "$lockfile" "$OUT/"

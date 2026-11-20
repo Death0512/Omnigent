@@ -10,6 +10,8 @@ from typing import Any, TypeAlias, cast
 
 import yaml
 
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
+
 from .datamodel import (
     AgentDef,
     ExecutorSpec,
@@ -45,7 +47,7 @@ YamlData: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
 
 # Default harness and model when unconfigured
 DEFAULT_HARNESS: str = "antigravity-native"
-DEFAULT_MODEL: str = "gemini-3.8-flash-high"
+DEFAULT_MODEL: str = DEFAULT_ANTIGRAVITY_MODEL
 
 # Dynamically-loaded Python callables resolved from `callable: mod.func`
 # paths in YAML; the loader has no way to know their signatures.

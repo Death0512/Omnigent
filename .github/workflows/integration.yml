@@ -22,7 +22,6 @@ on:
       - 'CHANGELOG.md'
       - 'tests/browser_ui/**'
       - 'tests/e2e_ui/**'
-      - 'web/**'
       - 'tests/scripts/**'
       - 'tests/github/**'
       - '.github/scripts/polly-review-*.py'

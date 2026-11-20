@@ -29,9 +29,6 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
     paths:
       - '**'
-      - '!web/**'
-      - 'web/package.json'
-      - 'web/electron/package.json'
       - '!docs/**'
       - '!designs/**'
       - '!CHANGELOG.md'

@@ -41,6 +41,7 @@ from omnigent.cli_common import (
 # Sourced from the stdlib-only bridge leaf, so importing it here adds no
 # launcher/runner imports to CLI startup.
 from omnigent.harnesses.devin_native.bridge import DEVIN_EFFORTS, DEVIN_PERMISSION_MODES
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
 
 _Args = ParamSpec("_Args")
 _Return = TypeVar("_Return")
@@ -1253,7 +1254,10 @@ def register_native_commands(cli: click.Group) -> None:
     @click.option(
         "--model",
         default=None,
-        help="Antigravity (agy) model to use for the session (defaults to gemini-3.8-flash-high).",
+        help=(
+            "Antigravity (agy) model to use for the session "
+            f"(defaults to {DEFAULT_ANTIGRAVITY_MODEL})."
+        ),
     )
     @click.argument("antigravity_args", nargs=-1, type=click.UNPROCESSED)
     def antigravity(
@@ -1288,7 +1292,7 @@ def register_native_commands(cli: click.Group) -> None:
         if server is None:
             server = cfg.get("server")
         if model is None:
-            model = cfg.get("model") or "gemini-3.8-flash-high"
+            model = cfg.get("model") or DEFAULT_ANTIGRAVITY_MODEL
         auto_open_conversation = _resolve_auto_open_conversation_from_config(cfg)
 
         server = _ensure_backend(server)

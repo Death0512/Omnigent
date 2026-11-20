@@ -58,8 +58,9 @@ def _build_antigravity_executor() -> Executor:
     """Construct an Antigravity executor, prioritizing native Antigravity CLI."""
     try:
         from omnigent.inner.antigravity_native_executor import AntigravityNativeExecutor
+
         return AntigravityNativeExecutor()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return AntigravityExecutor(
             model=os.environ.get(_ENV_MODEL) or None,
             api_key=os.environ.get(_ENV_API_KEY) or None,
@@ -73,7 +74,8 @@ def create_app() -> FastAPI:
     """Build the antigravity harness's FastAPI app."""
     try:
         from omnigent.inner.antigravity_native_harness import create_app as native_create_app
+
         return native_create_app()
-    except Exception:
+    except Exception:  # noqa: BLE001
         adapter = ExecutorAdapter(executor_factory=_build_antigravity_executor)
         return adapter.build()

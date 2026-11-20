@@ -277,7 +277,7 @@ jobs:
           # only the extension's own files are ever staged.
           git add package.json CHANGELOG.md
           # Guard: the release PR must never touch anything outside
-          # editors/vscode (e.g. web/, lockfiles). Fail loudly if it does.
+          # editors/vscode (e.g. lockfiles). Fail loudly if it does.
           if git diff --cached --name-only | grep -qv '^editors/vscode/'; then
             echo "::error::Release PR staged files outside editors/vscode:"
             git diff --cached --name-only | grep -v '^editors/vscode/'

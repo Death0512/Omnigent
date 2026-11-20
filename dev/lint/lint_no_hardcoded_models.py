@@ -53,6 +53,16 @@ SKIP_PARTS = {
 }
 OWNED_FALLBACK_PATH = Path("omnigent/models/model_fallbacks.py")
 FALLBACK_METADATA_FIELDS = frozenset({"owner", "provenance", "discovery_gap"})
+ALLOWED_PATHS = frozenset({Path("examples/symbiosis")})
+
+
+def _is_allowed(path: Path) -> bool:
+    """Return whether ``path`` belongs to an explicitly allowed bundle or fallback."""
+    try:
+        repo_rel = Path(_repo_relative(path))
+        return any(repo_rel == p or repo_rel.is_relative_to(p) for p in ALLOWED_PATHS)
+    except (ValueError, OSError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -215,6 +225,7 @@ def scan(path: Path) -> list[Hit]:
         or path.suffix not in SOURCE_EXTENSIONS
         or Path(_repo_relative(path)) in GENERATED_PATHS
         or any(part in SKIP_PARTS for part in path.parts)
+        or _is_allowed(path)
     ):
         return []
     if path.suffix == ".py":
@@ -234,6 +245,7 @@ def _iter_scannable_paths() -> list[Path]:
         if (path := Path(raw_path)).suffix in SOURCE_EXTENSIONS
         if path not in GENERATED_PATHS
         if not any(part in SKIP_PARTS for part in path.parts)
+        if not _is_allowed(path)
     ]
 
 

@@ -52,6 +52,7 @@ from types import ModuleType
 from typing import Any, TypeAlias
 
 from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from_dict
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
 from omnigent.spec.types import RetryPolicy
 
 from .executor import (
@@ -344,7 +345,7 @@ class AntigravityExecutor(Executor):
         :param retry_policy: Optional retry policy, reserved for parity with
             the other SDK executors. ``None`` uses defaults.
         """
-        self._model_override = model or "gemini-3.8-flash-high"
+        self._model_override = model or DEFAULT_ANTIGRAVITY_MODEL
         self._api_key = api_key
         self._vertex = vertex
         self._project = project
@@ -483,7 +484,7 @@ class AntigravityExecutor(Executor):
             terminal :class:`TurnComplete` / :class:`TurnCancelled` /
             :class:`ExecutorError`.
         """
-        effective_override = self._model_override or "gemini-3.8-flash-high"
+        effective_override = self._model_override or DEFAULT_ANTIGRAVITY_MODEL
         model = (config.model if config and config.model else None) or effective_override
         session_key = self._session_key(messages)
         prompt = _latest_user_text(messages)

@@ -111,6 +111,7 @@ from omnigent.host.local_server import (
 )
 from omnigent.inner import _proc, ui
 from omnigent.integration_daemon import IntegrationDaemon
+from omnigent.models.model_fallbacks import DEFAULT_ANTIGRAVITY_MODEL
 from omnigent.onboarding.sandboxes import available_providers as _sandbox_providers
 from omnigent.process_logging import (
     LOG_LEVEL_ENV_VAR,
@@ -959,7 +960,6 @@ def _pick_first_run_harness() -> _FirstRunPlan | None:
     if (
         default_provider_for_harness(config, "antigravity") is not None
         or default_provider_for_harness(config, "antigravity-native") is not None
-        or True
     ):
         return _FirstRunPlan(harness=None, agent=_bundled_example_path("symbiosis"))
     if default_provider_for_harness(config, "claude-sdk") is not None:
@@ -8045,7 +8045,9 @@ _RUN_HARNESS_HELP = (
 _FROM_OPENCLAW_HELP = (
     "Launch one agent from the OpenClaw/acpx registry without saving it to Omnigent config."
 )
-_MODEL_HELP = "Model to use for the agent (defaults to 'gemini-3.8-flash-high' for Antigravity)."
+_MODEL_HELP = (
+    f"Model to use for the agent (defaults to {DEFAULT_ANTIGRAVITY_MODEL!r} for Antigravity)."
+)
 _PROMPT_HELP = "Send this as the first message when the REPL starts."
 _AGENT_HELP = (
     "Agent registered on the --server to start the session with. With -p and "
@@ -8077,39 +8079,18 @@ _LOG_HELP = "Write a JSON dump of the conversation to ~/.omnigent/logs/ on exit.
 
 
 DEFAULT_HARNESS: str = "antigravity-native"
-DEFAULT_MODEL: str = "gemini-3.8-flash-high"
+DEFAULT_MODEL: str = DEFAULT_ANTIGRAVITY_MODEL
 
 
 _DEFAULT_HARNESS_PROMPTS = {
-    "antigravity": (
-        "You are Antigravity. "
-        "Help the user with software engineering tasks."
-    ),
-    "antigravity-native": (
-        "You are Antigravity. "
-        "Help the user with software engineering tasks."
-    ),
-    "claude-sdk": (
-        "You are Claude Code. "
-        "Help the user with software engineering tasks."
-    ),
-    "codex": (
-        "You are Codex. Help the user with software engineering tasks."
-    ),
-    "cursor": (
-        "You are Cursor. Help the user with software engineering tasks."
-    ),
-    "kimi": (
-        "You are Kimi Code. "
-        "Help the user with software engineering tasks."
-    ),
-    "qwen": (
-        "You are Qwen Code. "
-        "Help the user with software engineering tasks."
-    ),
-    "goose": (
-        "You are Goose. Help the user with software engineering tasks."
-    ),
+    "antigravity": ("You are Antigravity. Help the user with software engineering tasks."),
+    "antigravity-native": ("You are Antigravity. Help the user with software engineering tasks."),
+    "claude-sdk": ("You are Claude Code. Help the user with software engineering tasks."),
+    "codex": ("You are Codex. Help the user with software engineering tasks."),
+    "cursor": ("You are Cursor. Help the user with software engineering tasks."),
+    "kimi": ("You are Kimi Code. Help the user with software engineering tasks."),
+    "qwen": ("You are Qwen Code. Help the user with software engineering tasks."),
+    "goose": ("You are Goose. Help the user with software engineering tasks."),
 }
 _DEFAULT_HARNESS_PROMPT = "You are a helpful coding agent."
 
@@ -9424,10 +9405,13 @@ def run(
         harness = harness_default
 
     # First-run smart defaults: a bare `run` with no AGENT, no --harness, and no
-    # explicit persisted default → default to symbiosis on Antigravity High.
+    # explicit persisted default → resolve from configured credentials.
     if target is None and harness is None and not direct_server_cli:
-        target = _bundled_example_path("symbiosis")
-        harness = None
+        plan = _resolve_first_run_plan()
+        if plan is None:
+            return
+        target = plan.agent
+        harness = plan.harness
 
     # Interactive ``omnigent run`` opens the live conversation in the
     # browser by default so users discover the web UI once the server is up
@@ -14821,7 +14805,7 @@ def _ensure_bundled_agent_brain_credential(name: str) -> None:
     )
 
     brain_harness = _bundled_agent_brain_harness(name)
-    if brain_harness is None or name == "symbiosis" or brain_harness == "antigravity-native":
+    if brain_harness is None:
         return
     family = harness_family(brain_harness)
     if family is None:
@@ -14876,7 +14860,7 @@ def _ensure_bundled_agent_brain_credential(name: str) -> None:
 #: Brain-fallback harness priority for bundled agents — mirrors
 #: :func:`_pick_first_run_harness` so the shorthands and bare ``omnigent``
 #: agree on which credentialed harness a launch falls back to.
-_BUNDLED_BRAIN_FALLBACK_PRIORITY = ("claude-sdk", "codex", "pi")
+_BUNDLED_BRAIN_FALLBACK_PRIORITY = ("antigravity-native", "claude-sdk", "codex", "pi")
 
 
 def _bundled_agent_brain_harness_fallback(name: str) -> str | None:
@@ -14912,7 +14896,7 @@ def _bundled_agent_brain_harness_fallback(name: str) -> str | None:
     )
 
     brain_harness = _bundled_agent_brain_harness(name)
-    if brain_harness is None or name == "symbiosis" or brain_harness == "antigravity-native":
+    if brain_harness is None:
         return None
     family = harness_family(brain_harness)
     if family is None:

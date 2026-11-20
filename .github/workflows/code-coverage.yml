@@ -1,9 +1,7 @@
 name: Code Coverage
 
-# Coverage ratchet for both suites — backend pytest (`Coverage`) and the web
-# vitest frontend (`Coverage (ui)`). One job handles both: it triggers on either
-# producing workflow and branches on github.event.workflow_run.name to pick the
-# artifact, status context, and wording. Runs on workflow_run (privileged,
+# Coverage ratchet for backend pytest (`Coverage`).
+# Runs on workflow_run (privileged,
 # statuses:write) but does NOT check out PR code — it only consumes the artifact
 # and the GitHub API, so it isn't a "dangerous workflow".
 #
@@ -20,7 +18,7 @@ name: Code Coverage
 
 on:
   workflow_run:
-    workflows: [CI, web Tests]
+    workflows: [CI]
     types: [completed]
 
 # Read-only at the top level; write scopes live on the job below.
@@ -64,11 +62,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      # Per-suite parameters, selected by which workflow triggered this run.
-      ART_NAME: ${{ github.event.workflow_run.name == 'CI' && 'coverage-summary' || 'ui-coverage-summary' }}
-      CONTEXT: ${{ github.event.workflow_run.name == 'CI' && 'Coverage' || 'Coverage (ui)' }}
-      NOUN: ${{ github.event.workflow_run.name == 'CI' && 'Coverage' || 'UI coverage' }}
-      METRIC: ${{ github.event.workflow_run.name == 'CI' && 'Total coverage' || 'Total UI line coverage' }}
+      ART_NAME: coverage-summary
+      CONTEXT: Coverage
+      NOUN: Coverage
+      METRIC: Total coverage
     steps:
       # Data only — never the PR's code. Tolerate a missing artifact (fork PRs,
       # or a run that produced no coverage) via the no-data guard below.
@@ -111,15 +108,7 @@ jobs:
           fi
 
           # On a PR: baseline = the most recent $CONTEXT status recorded on main.
-          # We can't just read main's HEAD: the two producers are path-filtered
-          # against each other (backend CI ignores web/**, web Tests only
-          # runs on web/**), so a one-sided merge leaves HEAD carrying only one
-          # suite's status. Reading HEAD alone would then report "no baseline yet"
-          # and silently disable the other gate. Instead scan recent main commits
-          # and take the most recent that actually carries $CONTEXT. A single
-          # GraphQL query fetches the whole window's statuses at once (the legacy
-          # commit statuses we post appear under Commit.status.contexts), so this
-          # is one API call regardless of how far back the baseline sits.
+          # Scan recent main commits and take the most recent that actually carries $CONTEXT.
           BASELINE_JSON=$(gh api graphql \
             -f query='query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){ref(qualifiedName:"refs/heads/main"){target{... on Commit{history(first:$n){nodes{oid status{contexts{context description}}}}}}}}}' \
             -F owner="${REPO%/*}" -F name="${REPO#*/}" -F n="$BASELINE_LOOKBACK" 2>/dev/null || true)

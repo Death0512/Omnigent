@@ -50,6 +50,8 @@ _SCRIPT = Path(__file__).with_name("session_list_visibility.mjs")
 
 def is_scannable_path(path: Path) -> bool:
     """Include maintained client sources, excluding generated code and unit fixtures."""
+    if not path.is_file():
+        return False
     if path.suffix not in SOURCE_EXTENSIONS or _EXCLUDED_PARTS.intersection(path.parts):
         return False
     name = path.as_posix()

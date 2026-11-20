@@ -108,34 +108,6 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
-  # ── Android app (Gradle, version catalog) ────────────────────────────────
-  - package-ecosystem: gradle
-    directory: "/web/android"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
-    labels:
-      - dependencies
-    commit-message:
-      prefix: "chore(deps)"
-
-  # ── iOS app tooling (Bundler) ────────────────────────────────────────────
-  - package-ecosystem: bundler
-    directory: "/web/ios"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 7
-    labels:
-      - dependencies
-    commit-message:
-      prefix: "chore(deps)"
-
   # ── Container base images (deploy/*/Dockerfile*) ─────────────────────────
   - package-ecosystem: docker
     directories:

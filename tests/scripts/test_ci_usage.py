@@ -249,7 +249,7 @@ def test_shared_actions_and_reusable_workflows_require_caller_identity():
         assert step["env"]["OMNIGENT_CI_PIPELINE"] == "${{ inputs.pipeline }}"
     reusable = _workflow("issue-prioritization-v2.yml")
     assert reusable[True]["workflow_call"]["inputs"]["pipeline"]["required"] is True
-    for name in ("e2e-run", "integration-run", "compat-smoke-run", "compat-smoke-ui-run"):
+    for name in ("e2e-run", "integration-run", "compat-smoke-run"):
         source = (ROOT / f".github/actions/{name}/action.yml").read_text()
         assert "OMNIGENT_CI_PIPELINE=" not in source, "test actions must inherit caller identity"
 

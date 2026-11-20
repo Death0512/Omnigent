@@ -153,7 +153,7 @@ omni claude
 
 ```bash
 # Check status of running sessions and background daemons
-omni status
+omni doctor
 
 # Stop background runners and clean up active sessions
 omni stop

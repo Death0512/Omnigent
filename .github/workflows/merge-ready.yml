@@ -29,7 +29,7 @@ on:
   pull_request_target:
     types: [labeled, unlabeled]
   workflow_run:
-    workflows: [PR Template, CI, Lint, Docker build, E2E UI Tests, E2E Tests, Integration Tests, UI Snapshot, web Tests, Android Bundle, Security Scan, Trivy CVE Scan, Windows (native), Maintainer Approval]
+    workflows: [PR Template, CI, Lint, Docker build, E2E Tests, Integration Tests, Security Scan, Trivy CVE Scan, Windows (native), Maintainer Approval]
     types: [completed]
   check_run:
     types: [completed]

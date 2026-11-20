@@ -535,6 +535,9 @@ def test_claude_command_resume_binds_session_and_passes_unknown_args(
     captured: dict[str, object] = {}
     monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
     monkeypatch.setattr(
+        "omnigent.cli._ensure_backend", lambda server: server or "http://localhost:0"
+    )
+    monkeypatch.setattr(
         "omnigent.harnesses.claude_native.main.run_claude_native",
         _fake_run_claude_native_capture(captured),
     )
@@ -6790,6 +6793,9 @@ def test_claude_applies_auto_open_conversation_config(
     monkeypatch.setattr("omnigent.cli._GLOBAL_CONFIG_PATH", config_path)
     _save_global_config({"auto_open_conversation": True})
 
+    monkeypatch.setattr(
+        "omnigent.cli._ensure_backend", lambda server: server or "http://localhost:0"
+    )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "omnigent.harnesses.claude_native.main.run_claude_native",
@@ -7442,15 +7448,14 @@ def _fake_provider_for(*configured: str):
 
 
 def test_pick_first_run_prefers_antigravity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Antigravity configured → antigravity as primary recommended harness."""
+    """Antigravity configured → antigravity as primary recommended harness with symbiosis."""
     monkeypatch.setattr(
         "omnigent.onboarding.provider_config.default_provider_for_harness",
         _fake_provider_for("antigravity", "claude-sdk", "codex"),
     )
     plan = _pick_first_run_harness()
     assert plan is not None
-    assert plan.harness == "antigravity"
-    assert plan.agent is None
+    assert plan.agent is not None and plan.agent.endswith("symbiosis")
 
 
 def test_pick_first_run_prefers_claude_with_polly(monkeypatch: pytest.MonkeyPatch) -> None:
