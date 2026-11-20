@@ -127,9 +127,6 @@ def _ensure_antigravity_sdk() -> ModuleType:
         # this optional integration lazy until the first turn.
         return importlib.import_module("google.antigravity")
     except ImportError as exc:
-        from omnigent.onboarding.antigravity_auth import ANTIGRAVITY_EXTRA
-        from omnigent.onboarding.extra_install import extra_install_display
-
         raise ImportError(
             "Antigravity SDK executor is deprecated. Use native Antigravity CLI ('agy') via "
             "'omni agy', 'omni symbiosis', or harness 'antigravity-native'."

@@ -7,8 +7,7 @@ full contributor workflow.
 ## Architecture
 
 Omnigent is a Python agent orchestration/runtime package (`omnigent`, Python
-3.12+) with a FastAPI server, per-session runners, machine hosts, editable
-client SDKs, and a React/Vite web UI. CLI entry points `omnigent` and `omni`
+3.12+) with a FastAPI server, per-session runners, machine hosts, and client SDKs. CLI entry points `omnigent` and `omni`
 both resolve to `omnigent.cli:main`.
 
 - Agent specs (YAML bundles) are parsed/validated in `omnigent/spec/`
@@ -30,17 +29,13 @@ both resolve to `omnigent.cli:main`.
   approval/pause guardrails; `omnigent/onboarding/` manages provider setup and
   secrets.
 - `sdks/python-client/` and `sdks/ui/` are editable path-dependency SDK
-  packages; `web/` is the React frontend (`web/electron/` desktop,
-  `web/ios`/`web/android` mobile); `integrations/` and `examples/` are separate
-  packages; `dev/omnidev` is the Rust dev supervisor.
+  packages; `integrations/` and `examples/` are separate packages.
 - Tests mirror source ownership under `tests/` (see
-  [tests/README.md](tests/README.md)); frontend unit tests are colocated in
-  `web/`, browser E2E in `tests/e2e_ui/`, full-stack E2E in `tests/e2e/`.
+  [tests/README.md](tests/README.md)).
 
 ## Commands
 
-Environment: uv (`uv sync --extra all --group dev`), Node 22+ with pnpm for
-`web/`, Rust for `dev/omnidev`. Dev OS: macOS or Linux (WSL2 on Windows).
+Environment: uv (`uv sync --extra all --group dev`). Dev OS: Linux (WSL2 on Windows) or macOS.
 
 ```bash
 uv run --no-sync pytest tests/<area>            # default suite; integration/e2e/e2e_ui/e2e_live excluded by addopts
@@ -50,9 +45,7 @@ uv run --no-sync pyrefly check                  # canonical Python type checker
 uv run --no-sync pre-commit run --all-files
 ```
 
-- Web: `cd web && pnpm install && pnpm run lint && pnpm run type-check && pnpm run build`; colocated Vitest via `pnpm test`.
-- Full-stack dev pod: `just dev` (or `omnidev`, install with `cargo install --path dev/omnidev --force`); each checkout gets isolated state/ports.
-- `just ensure` (prereqs + git hooks), `just lint` / `just lint-all`, `just electron-dev`, `just run-ios` / `just run-android`; `just --list` for all recipes.
+- `just ensure` (prereqs + git hooks), `just lint` / `just lint-all`; `just --list` for all recipes.
 
 ## Reuse and design
 

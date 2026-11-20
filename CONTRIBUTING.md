@@ -122,8 +122,8 @@ Install local prerequisites first:
 - A Rust toolchain for the recommended `omnidev` local development supervisor.
 
 ```bash
-git clone https://github.com/omnigent-ai/omnigent.git
-cd omnigent
+git clone https://github.com/Death0512/Omnigent.git
+cd Omnigent
 
 uv python install
 uv venv --python "$(cat .python-version)"
