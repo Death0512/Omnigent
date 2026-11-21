@@ -329,7 +329,7 @@ class TestBuildAgyLaunch:
         assert argv[-2:] == ["--print-timeout", "30"]
 
     # ------------------------------------------------------------------
-    # Permission-mode → --dangerously-skip-permissions (phase 4 task 1)
+    # Permission mode and sandbox defaults
     # ------------------------------------------------------------------
 
     def test_bypass_mode_appends_skip_flag(self, fake_agy: str) -> None:
@@ -354,8 +354,8 @@ class TestBuildAgyLaunch:
         )
         assert _SKIP_FLAG not in argv
 
-    def test_non_bypass_headless_appends_skip_flag(self, fake_agy: str) -> None:
-        """Non-bypass mode + headless → the skip flag is auto-added (no hang)."""
+    def test_non_bypass_headless_does_not_escalate_permissions(self, fake_agy: str) -> None:
+        """Headless execution is not authorization to skip tool permissions."""
         argv, _ = build_agy_launch(
             conversation_id=None,
             model=None,
@@ -363,24 +363,26 @@ class TestBuildAgyLaunch:
             permission_mode="default",
             headless=True,
         )
-        assert _SKIP_FLAG in argv
+        assert _SKIP_FLAG not in argv
 
     def test_skip_flag_defaults_absent(self, fake_agy: str) -> None:
-        """Defaults (no permission_mode, not headless) omit the skip flag."""
+        """Defaults omit the dangerous bypass and explicitly enable sandbox/auto."""
         argv, _ = build_agy_launch(
             conversation_id=None,
             model=None,
             resume=False,
         )
         assert _SKIP_FLAG not in argv
+        assert "--sandbox" in argv
+        assert argv[argv.index("--mode") + 1] == "auto"
 
     def test_skip_flag_not_duplicated_from_extra_args(self, fake_agy: str) -> None:
-        """A user-passed skip flag in extra_args is not duplicated when headless."""
+        """An explicit skip flag remains a single caller-controlled opt-in."""
         argv, _ = build_agy_launch(
             conversation_id=None,
             model=None,
             resume=False,
-            headless=True,
+            headless=False,
             extra_args=(_SKIP_FLAG,),
         )
         assert argv.count(_SKIP_FLAG) == 1
@@ -402,14 +404,14 @@ class TestShouldSkipPermissions:
         """Non-bypass + interactive does not skip (agy prompts the attended user)."""
         assert should_skip_permissions(permission_mode="default", headless=False) is False
 
-    def test_non_bypass_headless_true(self) -> None:
-        """Non-bypass + headless skips so an unattended turn does not hang."""
-        assert should_skip_permissions(permission_mode="default", headless=True) is True
+    def test_non_bypass_headless_false(self) -> None:
+        """Headless status never elevates tool permissions."""
+        assert should_skip_permissions(permission_mode="default", headless=True) is False
 
     def test_none_mode_interactive_false(self) -> None:
         """``None`` mode is treated as non-bypass; interactive does not skip."""
         assert should_skip_permissions(permission_mode=None, headless=False) is False
 
-    def test_none_mode_headless_true(self) -> None:
-        """``None`` mode + headless skips (headless wins regardless of mode)."""
-        assert should_skip_permissions(permission_mode=None, headless=True) is True
+    def test_none_mode_headless_false(self) -> None:
+        """An unspecified permission mode remains non-bypass in headless runs."""
+        assert should_skip_permissions(permission_mode=None, headless=True) is False

@@ -38,18 +38,21 @@ class _FakeAck:
 
 
 class _FakeTerminalRegistry:
-    def __init__(self) -> None:
+    def __init__(self, entries: list[Any] | None = None) -> None:
         self.closed: list[str] = []
+        self.entries = entries or []
 
     def list_for_conversation(self, conv_id: str) -> list[Any]:
-        return []
+        return list(self.entries)
 
 
 class _FakeResourceRegistry:
-    def __init__(self) -> None:
-        self.terminal_registry = _FakeTerminalRegistry()
+    def __init__(self, entries: list[Any] | None = None) -> None:
+        self.terminal_registry = _FakeTerminalRegistry(entries)
+        self.closed: list[str] = []
 
     async def close_terminal(self, conv_id: str, terminal_id: str) -> bool:
+        self.closed.append(terminal_id)
         return True
 
 
@@ -140,12 +143,49 @@ def test_native_cancel_capability_follows_stop_registry() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("harness", ["antigravity-native", "claude-sdk", None])
+@pytest.mark.parametrize("harness", ["claude-sdk", None])
 async def test_no_handler_harnesses_return_none(harness: str | None) -> None:
     """Harnesses without an interrupt/stop handler return None (caller falls through)."""
     runner, _ = _make_runner()
     assert await runner.interrupt(harness, "conv_x") is None
     assert await runner.stop(harness, "conv_x") is None
+
+
+@pytest.mark.asyncio
+async def test_antigravity_stop_requires_registered_terminal() -> None:
+    """Antigravity stop must not claim success if no owned terminal can be closed."""
+    runner, _ = _make_runner()
+
+    response = await runner.stop("antigravity-native", "conv_agy")
+
+    assert isinstance(response, Response)
+    assert response.status_code == 503
+    assert b"antigravity_native_stop_unconfirmed" in response.body
+
+
+@pytest.mark.asyncio
+async def test_antigravity_stop_closes_terminal_before_confirming_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Antigravity stop confirms cancellation only after its terminal closes."""
+    from omnigent.runner.native import interrupt as native_interrupt
+
+    terminal = SimpleNamespace(terminal_name="antigravity", session_key="main")
+    resource_registry = _FakeResourceRegistry([terminal])
+    runner, captured = _make_runner(resource_registry=resource_registry)
+    cancelled: list[str] = []
+
+    async def _cancel_forwarder(session_id: str) -> None:
+        cancelled.append(session_id)
+
+    monkeypatch.setattr(native_interrupt, "_cancel_auto_forwarder_task", _cancel_forwarder)
+
+    response = await runner.stop("antigravity-native", "conv_agy")
+
+    assert isinstance(response, Response) and response.status_code == 204
+    assert resource_registry.closed == ["terminal_antigravity_main"]
+    assert cancelled == ["conv_agy"]
+    assert captured["wake_calls"][-1]["confirmed_cancellation"] is True
 
 
 _OPENCODE_STATE = SimpleNamespace(

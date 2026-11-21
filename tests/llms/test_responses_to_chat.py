@@ -631,6 +631,14 @@ async def test_streaming_with_usage() -> None:
     assert completed.response.usage == Usage(input_tokens=5, output_tokens=1, total_tokens=6)
 
 
+@pytest.mark.asyncio
+async def test_stream_without_terminal_finish_reason_is_not_completed() -> None:
+    """EOF after partial output is a failed/incomplete stream, not a success."""
+    chunks = [{"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]}]
+    with pytest.raises(RuntimeError, match="ended before a terminal finish_reason"):
+        _ = [e async for e in chat_stream_to_response_events(_aiter(chunks), model="test")]
+
+
 # ── Kimi / list-content streaming ────────────────────────────────────────────
 
 

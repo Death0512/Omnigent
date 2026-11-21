@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-from ._types import File
+from ._types import ErrorInfo, File
 
 
 @dataclass(frozen=True)
@@ -29,10 +29,26 @@ class QueryResult:
         ``bytes``, and ``created_at``; use
         :meth:`FilesNamespace.download` or
         :meth:`FilesNamespace.get_content` to retrieve the bytes.
+    :param status: Terminal response status.  ``"completed"`` means the
+        turn completed normally; ``"failed"``, ``"incomplete"`` and
+        ``"cancelled"`` preserve the terminal failure state instead of
+        presenting partial text as a successful result.
+    :param error: Structured failure details when the terminal status is
+        ``"failed"``.
+    :param incomplete_reason: Why a turn stopped before completion, when
+        the terminal status is ``"incomplete"``.
     """
 
     text: str
     files: list[File] = field(default_factory=list)
+    status: str = "completed"
+    error: ErrorInfo | None = None
+    incomplete_reason: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Whether the query completed successfully."""
+        return self.status == "completed"
 
 
 class QueryStream:

@@ -46,6 +46,8 @@ from omnigent.server.schemas import (
     CreatedEvent,
     ElicitationRequestEvent,
     ElicitationRequestParams,
+    ErrorDetail,
+    FailedEvent,
     OutputFileDoneEvent,
     OutputItemDoneEvent,
     OutputTextDeltaEvent,
@@ -905,6 +907,76 @@ async def test_query_collects_text_from_deltas() -> None:
     # instead of appended.
     assert result.text == "Hello world"
     assert result.files == []
+
+
+@pytest.mark.asyncio
+async def test_query_preserves_failed_terminal_status_and_partial_text() -> None:
+    """A failed turn must not be returned as an ordinary successful result."""
+    session = _make_session()
+    failed = FailedEvent(
+        type="response.failed",
+        source="execution",
+        response=ResponseObject(
+            id="resp_failed",
+            status="failed",
+            model="test-model",
+            created_at=1700000000,
+            output=[],
+            error=ErrorDetail(code="provider_error", message="provider failed"),
+        ),
+    )
+    ns = _FakeNamespace(
+        stream_scripts=[
+            _StreamScript(
+                events=[
+                    OutputTextDeltaEvent(type="response.output_text.delta", delta="partial"),
+                    failed,
+                ]
+            )
+        ],
+        session_obj=session,
+    )
+    chat = SessionsChat(
+        namespace=ns,
+        files_uploader=None,
+        files_getter=None,
+        session=session,
+    )
+
+    result = await chat.query("hi")
+
+    assert result.text == "partial"
+    assert result.status == "failed"
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_query_marks_eof_without_terminal_event_incomplete() -> None:
+    """EOF after a partial delta is not a successful terminal response."""
+    session = _make_session()
+    ns = _FakeNamespace(
+        stream_scripts=[
+            _StreamScript(
+                events=[OutputTextDeltaEvent(type="response.output_text.delta", delta="partial")]
+            )
+        ],
+        session_obj=session,
+    )
+    chat = SessionsChat(
+        namespace=ns,
+        files_uploader=None,
+        files_getter=None,
+        session=session,
+    )
+
+    result = await chat.query("hi")
+
+    assert result.text == "partial"
+    assert result.status == "incomplete"
+    assert result.ok is False
+    assert result.incomplete_reason == "stream_ended_without_terminal_event"
 
 
 @pytest.mark.asyncio

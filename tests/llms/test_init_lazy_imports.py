@@ -17,6 +17,20 @@ from __future__ import annotations
 
 import importlib
 import sys
+from collections.abc import Generator
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules() -> Generator[None, None, None]:
+    """Preserve sys.modules across tests that intentionally purge module state."""
+    saved = sys.modules.copy()
+    try:
+        yield
+    finally:
+        sys.modules.clear()
+        sys.modules.update(saved)
 
 
 def _purge(prefix: str) -> None:

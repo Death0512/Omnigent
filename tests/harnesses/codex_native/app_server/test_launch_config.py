@@ -475,18 +475,14 @@ def test_native_codex_resource_attributes_reach_server_and_terminal(
         }
 
 
-def test_build_codex_native_server_without_bypass_emits_no_bypass_config(
+def test_build_codex_native_server_without_bypass_emits_safe_explicit_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    The default (``bypass_sandbox=False``) writes no approval/sandbox overrides.
-
-    Guards the safe default: an app-server built without the opt-in must
-    leave Codex's normal approval-prompt + own-sandbox stance untouched, so
-    no ``approval_policy`` / ``sandbox_mode`` override leaks in. A regression
-    that always emitted them would silently disable the sandbox for every
-    native Codex session.
+    The default (``bypass_sandbox=False``) explicitly pins Codex's safe
+    workspace-write + on-request policy. This prevents a copied user config
+    from widening the private session's command boundary.
     """
     monkeypatch.setattr(
         "omnigent.harnesses.codex_native.app_server._find_codex_cli",
@@ -504,8 +500,8 @@ def test_build_codex_native_server_without_bypass_emits_no_bypass_config(
     )
 
     overrides = "\n".join(app_server.config_overrides)
-    assert "approval_policy" not in overrides
-    assert "sandbox_mode" not in overrides
+    assert 'approval_policy="on-request"' in overrides
+    assert 'sandbox_mode="workspace-write"' in overrides
 
 
 def test_build_codex_native_server_bypass_emits_full_access_config(

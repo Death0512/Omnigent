@@ -190,7 +190,7 @@ def test_symbiosis_tool_wiring_with_mock_executor() -> None:
         {
             "agent": "agy_architect",
             "title": "draft-spec",
-            "input": "Author spec.draft.md for the new feature.",
+            "args": {"input": "Author spec.draft.md for the new feature."},
         },
     )
     # Step 2: Orchestrator completes turn after receiving subagent response
@@ -203,6 +203,7 @@ def test_symbiosis_tool_wiring_with_mock_executor() -> None:
         assert isinstance(events_1[0], ToolCallRequest)
         assert events_1[0].name == "sys_session_send"
         assert events_1[0].args["agent"] == "agy_architect"
+        assert events_1[0].args["args"]["input"].startswith("Author spec.draft.md")
 
         # Turn 2: completion
         events_2 = [e async for e in ex.run_turn([], tools_list, agent_def.prompt or "")]

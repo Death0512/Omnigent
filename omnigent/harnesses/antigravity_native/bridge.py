@@ -695,24 +695,68 @@ def seed_isolated_agy_home(
 
 
 def _seed_isolated_agy_settings(real_home: Path, iso_gemini: Path) -> None:
-    """Seed the user's real ``settings.json`` as the base of the isolated one.
+    """Seed and harden the per-session Antigravity settings.
 
     The real settings carry backend config agy needs at turn time — notably the
     ``gcp`` block (project + location) for GCP/enterprise logins, without which
-    every turn fails server-side with ``invalid location: ""``. Copied only when
-    the isolated file is absent so a re-seed never clobbers per-session edits
-    (the trust / survey seeders then merge their keys on top). Best-effort: a
-    failed copy only means agy runs without the user's settings.
+    every turn fails server-side with ``invalid location: ""``. The copied
+    settings are *not* trusted as a security policy: every session explicitly
+    disables non-workspace access, enables the terminal sandbox and uses the
+    sandbox-only permission preset. Broad user allow rules are discarded so a
+    future edit to the global settings cannot silently widen this managed
+    session. A malformed settings file is rejected rather than launched with an
+    unknown safety posture.
 
     :param real_home: The user's real home directory.
     :param iso_gemini: The bridge-owned ``--gemini_dir`` being seeded.
     """
     real_settings = real_home / ".gemini" / "antigravity-cli" / "settings.json"
     iso_settings = iso_gemini / "antigravity-cli" / "settings.json"
-    if real_settings.is_file() and not iso_settings.exists():
+    iso_settings.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    data: dict[str, object] = {}
+    source = iso_settings if iso_settings.is_file() else real_settings
+    if source.is_file():
+        try:
+            loaded = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Refusing to launch Antigravity with invalid settings: {source}"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(
+                f"Refusing to launch Antigravity with non-object settings: {source}"
+            )
+        data = dict(loaded)
+
+    # User allow rules are an approval bypass and may explicitly run commands
+    # outside the terminal sandbox. Keep deny/ask rules for user visibility, but
+    # never import an allow list into a managed, non-interactive session.
+    permissions = data.get("permissions")
+    if isinstance(permissions, dict):
+        permissions = dict(permissions)
+        permissions["allow"] = []
+        data["permissions"] = permissions
+    else:
+        data["permissions"] = {"allow": []}
+
+    # These keys are the vendor-supported policy boundary. They are written on
+    # every seed, including an existing bridge, so a stale session cannot retain
+    # a previously broad setting.
+    data["allowNonWorkspaceAccess"] = False
+    data["agentMode"] = "auto"
+    data["enableTerminalSandbox"] = True
+    data["toolPermission"] = "proceed-in-sandbox"
+
+    fd, tmp_name = tempfile.mkstemp(prefix="settings.json.", dir=iso_settings.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(data, sort_keys=True) + "\n")
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, iso_settings)
+    finally:
         with contextlib.suppress(OSError):
-            iso_settings.write_bytes(real_settings.read_bytes())
-            os.chmod(iso_settings, 0o600)
+            Path(tmp_name).unlink()
 
 
 def _seed_isolated_agy_onboarding_marker(real_home: Path, iso_gemini: Path) -> None:

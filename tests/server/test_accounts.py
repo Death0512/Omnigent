@@ -1673,12 +1673,14 @@ def test_delete_user_revokes_durable_authority(accounts_app: TestClient, tmp_pat
     import uuid
 
     from omnigent.server.device_grant_store import DeviceGrantStore, hash_secret
+    from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
     from omnigent.stores.host_store import HostStore
     from omnigent.stores.scheduled_task_store.sqlalchemy_store import (
         SqlAlchemyScheduledTaskStore,
     )
 
     db_url = f"sqlite:///{tmp_path}/test.db"
+    agents = SqlAlchemyAgentStore(db_url)
     cookie_secret = bytes.fromhex(os.environ["OMNIGENT_ACCOUNTS_COOKIE_SECRET"])
     admin = _login(accounts_app, "admin", "admin-pw-12345")
     invite = admin.post("/auth/invite", json={}).json()["token"]
@@ -1695,6 +1697,13 @@ def test_delete_user_revokes_durable_authority(accounts_app: TestClient, tmp_pat
     assert r.status_code == 200, r.text
     refresh_token = r.json()["refresh_token"]
     assert alice.get("/auth/me").status_code == 200
+    old_agent_id = uuid.uuid4().hex
+    agents.create_user_agent(
+        old_agent_id,
+        "alice-private-agent",
+        f"{old_agent_id}/bundle",
+        owner="alice",
+    )
 
     tasks = SqlAlchemyScheduledTaskStore(db_url)
     task = tasks.create(
@@ -1716,8 +1725,23 @@ def test_delete_user_revokes_durable_authority(accounts_app: TestClient, tmp_pat
     assert grants.get_by_refresh_hash(hash_secret(refresh_token, cookie_secret)) is None
     assert hosts.get_host(host.host_id) is None
     assert hosts.list_hosts("alice") == []
+    assert agents.get(old_agent_id) is None
     # The still-signed cookie no longer authenticates.
     assert alice.get("/auth/me").status_code == 401
+
+    # Re-registering the same identity must not make the deleted account's
+    # user-agent rows visible again through owner-based agent lookup.
+    replacement_invite = admin.post("/auth/invite", json={}).json()["token"]
+    replacement = _TC(accounts_app.app).post(
+        "/auth/register",
+        json={
+            "invite": replacement_invite,
+            "username": "alice",
+            "password": "alice-pw-5678",
+        },
+    )
+    assert replacement.status_code == 200, replacement.text
+    assert agents.list_user_agents("alice").data == []
 
 
 def test_change_own_password_round_trip(accounts_app: TestClient) -> None:

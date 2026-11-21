@@ -7034,6 +7034,16 @@ def _claude_terminal_request(
         claude_args,
         model=claude_config.model if claude_config is not None else None,
     )
+    if not any(
+        arg == "--permission-mode"
+        or arg.startswith("--permission-mode=")
+        or arg == "--dangerously-skip-permissions"
+        for arg in claude_args
+    ):
+        # Do not inherit a user-wide bypassPermissions preference into a
+        # managed native session. Caller-supplied permission modes remain
+        # explicit opt-ins and are preserved.
+        claude_args = (*claude_args, "--permission-mode", "manual")
     args = augment_claude_args(
         claude_args,
         bridge_dir=bridge_dir,
@@ -7044,6 +7054,7 @@ def _claude_terminal_request(
         model_overrides=claude_config.model_overrides if claude_config is not None else None,
         append_system_prompt=append_system_prompt,
         allowed_tools=allowed_tools,
+        enforce_sandbox=True,
     )
     # Let a registered launcher plugin (e.g. a wrapper such as isaac) rewrite the
     # command/args to wrap the same fully-augmented Claude launch. Identity by

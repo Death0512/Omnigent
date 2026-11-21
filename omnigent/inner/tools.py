@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import inspect
+import types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    Protocol,
+    TypeAlias,
+    get_args,
+    get_origin,
+    get_type_hints,
+    runtime_checkable,
+)
 
 if TYPE_CHECKING:
     from .datamodel import AgentDef, ExecutorSpec, OSEnvSpec
@@ -87,18 +98,22 @@ def _schema_from_callable(fn: DynamicCallable) -> ToolSchema:
     unannotated parameters.  Skips ``self`` and ``cls``.
     """
     sig = inspect.signature(fn)
+    # ``from __future__ import annotations`` stores annotations as strings.
+    # Resolve them against the callable's module before mapping them to JSON
+    # Schema; silently treating unresolved primitives as strings corrupts the
+    # tool contract and moves the failure to runtime dispatch.
+    try:
+        resolved_hints = get_type_hints(fn)
+    except (NameError, TypeError, ValueError):
+        resolved_hints = {}
     properties: ToolSchema = {}
     required: list[str] = []
 
     for pname, param in sig.parameters.items():
         if pname in ("self", "cls"):
             continue
-        annotation = param.annotation
-        if annotation is inspect.Parameter.empty:
-            json_type = "string"
-        else:
-            json_type = _PY_TYPE_TO_JSON.get(annotation, "string")
-        properties[pname] = {"type": json_type}
+        annotation = resolved_hints.get(pname, param.annotation)
+        properties[pname] = _json_schema_for_annotation(annotation)
         if param.default is inspect.Parameter.empty:
             required.append(pname)
 
@@ -109,6 +124,40 @@ def _schema_from_callable(fn: DynamicCallable) -> ToolSchema:
     if required:
         schema["required"] = required
     return schema
+
+
+def _json_schema_for_annotation(annotation: object) -> dict[str, Any]:
+    """Map a resolved Python annotation to a conservative JSON Schema.
+
+    The helper intentionally keeps the existing string fallback for genuinely
+    unannotated or opaque values, but handles postponed primitive annotations,
+    containers, and nullable unions without collapsing them to ``string``.
+    """
+    if annotation is inspect.Parameter.empty or annotation is Any:
+        return {"type": "string"}
+    if annotation is type(None):
+        return {"type": "null"}
+    if annotation in _PY_TYPE_TO_JSON:
+        return {"type": _PY_TYPE_TO_JSON[annotation]}
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (types.UnionType,):
+        variants = [_json_schema_for_annotation(item) for item in args]
+        return {"anyOf": variants}
+    # typing.Union has a different origin on Python 3.12.
+    if str(origin) == "typing.Union":
+        variants = [_json_schema_for_annotation(item) for item in args]
+        return {"anyOf": variants}
+    if origin is list:
+        item_schema = _json_schema_for_annotation(args[0]) if args else {"type": "string"}
+        return {"type": "array", "items": item_schema}
+    if origin is dict:
+        value_schema = (
+            _json_schema_for_annotation(args[1]) if len(args) > 1 else {"type": "string"}
+        )
+        return {"type": "object", "additionalProperties": value_schema}
+    return {"type": "string"}
 
 
 # ---------------------------------------------------------------------------

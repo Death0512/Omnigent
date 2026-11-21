@@ -466,6 +466,56 @@ async def test_each_new_step_posts_once_and_rereads_dedup(
 
 
 @pytest.mark.asyncio
+async def test_failed_event_post_does_not_advance_seen_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed mirror POST is replayed instead of being permanently skipped."""
+    step = _load("planner_response_text")
+    state = reader._ReaderState(seen=set(), interacted=set(), model_catalog={})
+    attempts = 0
+    allow_success = False
+
+    async def _post_with_one_failure(**_kwargs: object) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200 if allow_success else 503)
+
+    monkeypatch.setattr(reader, "post_session_event_with_retry", _post_with_one_failure)
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(reader, "_sleep", _no_sleep)
+
+    async def _no_interaction(*_args: object) -> None:
+        return None
+
+    await reader._process_committed_step(
+        step,
+        client=cast(httpx.AsyncClient, object()),
+        session_id=_SESSION_ID,
+        cascade_id=_CASCADE_ID,
+        state=state,
+        on_pending_interaction=cast(Any, _no_interaction),
+    )
+    first_attempts = attempts
+    assert first_attempts > 0
+    assert not state.seen
+
+    allow_success = True
+    await reader._process_committed_step(
+        step,
+        client=cast(httpx.AsyncClient, object()),
+        session_id=_SESSION_ID,
+        cascade_id=_CASCADE_ID,
+        state=state,
+        on_pending_interaction=cast(Any, _no_interaction),
+    )
+    assert attempts > first_attempts
+    assert len(state.seen) == 1
+
+
+@pytest.mark.asyncio
 async def test_incremental_steps_each_post_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -8362,6 +8362,17 @@ def _build_claude_native_base_args(
     # or the joined ``--model=X`` form).
     if model_override and not any(arg == "--model" or arg.startswith("--model=") for arg in args):
         args.extend(("--model", model_override))
+    # The user-level settings file is outside Omnigent's control and may select
+    # ``bypassPermissions``. Pin the normal native-session mode on argv so that
+    # global preferences cannot silently bypass approvals. Explicit per-session
+    # permission modes and explicit dangerous flags remain caller-controlled.
+    if not any(
+        arg == "--permission-mode"
+        or arg.startswith("--permission-mode=")
+        or arg == "--dangerously-skip-permissions"
+        for arg in args
+    ):
+        args.extend(("--permission-mode", "manual"))
     return tuple(args)
 
 
@@ -9528,12 +9539,23 @@ async def _auto_create_claude_terminal(
             if _transcript is not None:
                 resume_external_session_id = resume_session_id
                 resume_prefix_bytes = _measured_prefix_bytes(_transcript)
-        except Exception:  # best-effort; launch fresh on failure
-            _logger.warning(
-                "Could not synthesize Claude resume transcript for %s; launching without --resume",
+        except Exception as exc:
+            # A resume preparation failure must never silently become a fresh
+            # Claude conversation: that would keep the same Omnigent session id
+            # while discarding its model context.  The transcript helper already
+            # handles the explicitly recoverable cases (temporary server
+            # unavailability and an intact local transcript).  Anything reaching
+            # this boundary is therefore a hard launch error.
+            _logger.error(
+                "Could not synthesize Claude resume transcript for %s; refusing "
+                "to launch a fresh context",
                 session_id,
                 exc_info=True,
             )
+            raise RuntimeError(
+                f"Claude resume preparation failed for session {session_id!r}; "
+                "refusing to discard conversation history"
+            ) from exc
     elif session_external_id is None and fork_source_external_id is not None:
         # Forked clone with no native session yet: clone the SOURCE's
         # local Claude transcript into the clone's OWN project dir under a
@@ -10022,6 +10044,7 @@ async def _auto_create_claude_terminal(
         # The route-turn hook is registered only when this session can
         # actually route; otherwise every submit would pay its round trip.
         turn_routing=_claude_turn_router is not None,
+        enforce_sandbox=True,
     )
     skill_overlay = claude_agents_skill_overlay(bridge_dir)
     trusted_added_dirs = (skill_overlay,) if str(skill_overlay) in claude_args else ()

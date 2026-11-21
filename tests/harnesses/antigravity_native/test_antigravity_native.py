@@ -618,7 +618,7 @@ async def test_launch_and_record_threads_headless_skip_flag(
             startup_progress=None,
         )
 
-    assert "--dangerously-skip-permissions" in captured_args
+    assert "--dangerously-skip-permissions" not in captured_args
 
 
 async def test_launch_and_record_isolates_gemini_dir_and_wires_relay(

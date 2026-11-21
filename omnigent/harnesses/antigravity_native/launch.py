@@ -131,7 +131,7 @@ def resolve_native_antigravity_launch(
     if credentials is not None:
         return NativeAntigravityLaunch(
             auth_mode="api-key",
-            model=model if model is not None else (credentials.model or DEFAULT_ANTIGRAVITY_MODEL),
+            model=model if model is not None else credentials.model,
             extra_env=credentials.environment(),
         )
     if not gemini_auth_has_credential():
@@ -143,7 +143,7 @@ def resolve_native_antigravity_launch(
         )
     return NativeAntigravityLaunch(
         auth_mode="subscription",
-        model=model or DEFAULT_ANTIGRAVITY_MODEL,
+        model=model,
     )
 
 
@@ -155,45 +155,42 @@ def should_skip_permissions(
     """Decide whether ``--dangerously-skip-permissions`` should be appended.
 
     agy's only pre-emptive permission control is the all-or-nothing bypass flag
-    (see :data:`_SKIP_PERMISSIONS_FLAG`). The flag is appended when **either**:
+    (see :data:`_SKIP_PERMISSIONS_FLAG`). The flag is appended only when:
 
     * ``permission_mode == "bypassPermissions"`` — the user/worker explicitly
       asked for full auto-approval (the truthful analogue of how
       ``claude-native`` maps ``--permission-mode bypassPermissions`` and
       ``codex-native`` maps ``--dangerously-bypass-approvals-and-sandbox``); or
-    * the launch is **headless** — no interactive client will attach to answer
-      agy's ``request-review`` TUI prompt, so leaving it on would hang the turn
-      forever. Headless/unattended antigravity-native launches (sandbox,
-      autonomous, server-spawned sub-agents) therefore auto-bypass, matching how
-      the SDK/headless flavors run unattended.
+    * ``permission_mode == "bypassPermissions"`` — the user explicitly asked
+      for full auto-approval. Headless execution is **not** an authorization
+      signal: the safe session settings use Auto + the terminal sandbox and
+      Antigravity soft-denies actions that still require a human review when no
+      reviewer is attached.
 
-    For a non-bypass, interactive (attended) launch the flag is omitted so agy's
-    default ``request-review`` prompts the user per tool — answered by the
-    attached TTY (CLI) or, on the host-spawned web path, surfaced as a real-time
-    Omnigent elicitation by the RPC read driver's interaction bridge (see
-    :mod:`omnigent.harnesses.antigravity_native.reader` /
-    :mod:`omnigent.harnesses.antigravity_native.interactions`). agy exposes no firing
-    pre-tool hook, so Omnigent cannot pre-empt a tool before it runs; the
-    elicitation card is the honest gate.
+    For the normal mode the flag is omitted so Antigravity's sandbox policy and
+    permission rules remain authoritative. A caller that needs unattended
+    operation must provide an explicit, auditable bypass choice rather than
+    inheriting one from the process TTY state.
 
     .. warning:: The ``headless`` argument is currently derived from the
        launching process's TTY (``_launch_is_headless`` in
        :mod:`omnigent.harnesses.antigravity_native.main`). That is sound only while
        antigravity-native is CLI-launched. If a Phase-5 server-spawn / web-attach
        launch path is added, "headless" must be redefined as "no web client
-       attached" — otherwise a web-attended session would auto-bypass here. See
-       the matching note on ``_launch_is_headless``.
+       attached" for lifecycle/reporting purposes. It must never be used as an
+       authorization signal.
 
     :param permission_mode: The session's effective Omnigent permission mode,
         e.g. ``"bypassPermissions"`` / ``"default"`` / ``"acceptEdits"``.
         ``None`` is treated as a non-bypass mode.
-    :param headless: ``True`` when no interactive client will attach (sandbox /
-        autonomous / server-spawned / detached launch).
+    :param headless: Whether no interactive client will attach. This value is
+        intentionally ignored for permission elevation.
     :returns: ``True`` when the bypass flag should be appended to the agy argv.
     """
-    if permission_mode == _BYPASS_PERMISSION_MODE:
-        return True
-    return headless
+    # Keep the argument for API compatibility and lifecycle diagnostics; it is
+    # intentionally not an authorization signal.
+    _ = headless
+    return permission_mode == _BYPASS_PERMISSION_MODE
 
 
 def build_agy_launch(
@@ -225,15 +222,11 @@ def build_agy_launch(
       prior launch; agy cannot resume the launcher's minted placeholder.
 
     **Permission mode → agy flag.** ``--dangerously-skip-permissions`` is
-    appended when :func:`should_skip_permissions` says so — i.e. when
-    ``permission_mode == "bypassPermissions"`` OR the launch is *headless*
-    (no interactive client will attach to answer agy's ``request-review``
-    prompt, which would otherwise hang an unattended turn). Otherwise it is
-    omitted so agy's default ``request-review`` prompts the attached user. This
-    is the *only* pre-emptive control agy honors; it is all-or-nothing and
-    cannot be routed to the web UI or made per-tool (the genuine Omnigent policy
-    gate for this harness is post-hoc/audit-only). The flag is not duplicated
-    when *extra_args* already carries it.
+    appended only when ``permission_mode == "bypassPermissions"``. Headless
+    launches do not receive an implicit bypass. This is the *only* pre-emptive
+    control agy honors; it is all-or-nothing and cannot be routed to the web UI
+    or made per-tool. The flag is not duplicated when *extra_args* already
+    carries it.
 
     Both launch paths resolve setup credentials here and pass the resulting
     environment to the child. The terminal spec supplies the workspace cwd.
@@ -248,10 +241,8 @@ def build_agy_launch(
     :param permission_mode: The session's effective Omnigent permission mode,
         e.g. ``"bypassPermissions"``. ``None`` (the default) is a non-bypass
         mode. See :func:`should_skip_permissions`.
-    :param headless: ``True`` when no interactive client will attach to the agy
-        TUI (sandbox / autonomous / server-spawned / detached). Forces the
-        bypass flag so agy does not hang waiting for a ``request-review``
-        answer. See :func:`should_skip_permissions`.
+    :param headless: Whether no interactive client will attach to the agy TUI.
+        This is telemetry/lifecycle context only and does not force a bypass.
     :param extra_args: Additional raw CLI args appended after all generated
         flags, e.g. ``("--print-timeout", "30")``.
     :param log_dir: Private directory for this launch's RPC discovery log.
@@ -277,9 +268,19 @@ def build_agy_launch(
         argv.extend(["--conversation", conversation_id])
     if model is not None:
         argv.extend(["--model", model])
-    # Append the coarse bypass flag iff permission mode / headless calls for it,
-    # and only when the caller's pass-through args have not already added it
-    # (a user can pass it explicitly; avoid a confusing duplicate).
+    # Keep sandboxing explicit even when the user's global settings omit it.
+    # Antigravity ignores these flags when the host cannot provide its OS
+    # sandbox; the isolated settings still retain ``agentMode=auto`` and
+    # ``toolPermission=proceed-in-sandbox`` so that such a host fails closed
+    # for unattended actions instead of silently running with full access.
+    if not any(arg == "--sandbox" for arg in extra_args):
+        argv.append("--sandbox")
+    if not any(arg == "--mode" or arg.startswith("--mode=") for arg in extra_args):
+        argv.extend(("--mode", "auto"))
+
+    # Append the coarse bypass flag only for an explicit permission mode, and
+    # only when the caller's pass-through args have not already added it (a user
+    # can pass it explicitly; avoid a confusing duplicate).
     if should_skip_permissions(permission_mode=permission_mode, headless=headless) and (
         _SKIP_PERMISSIONS_FLAG not in extra_args
     ):

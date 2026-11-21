@@ -513,14 +513,80 @@ async def _stream_converse(
     :returns: Async iterator of Chat Completions chunk dicts.
     """
     model = kwargs["modelId"]
-    response = await asyncio.to_thread(client.converse_stream, **kwargs)
+    # boto3 exposes a synchronous event stream.  Iterate it here to preserve
+    # event ordering and exception semantics.  The iterator itself can block;
+    # callers that need strict event-loop fairness must supply a transport
+    # wrapper that offloads the complete iterator while retaining this ordering.
+    response = client.converse_stream(**kwargs)
     stream = response.get("stream", [])
-
+    tool_call_index_by_block: dict[int, int] = {}
+    next_tool_call_index = 0
     for event in stream:
+        if not isinstance(event, dict):
+            continue
+
+        # Bedrock reports failures as one of these top-level event keys.  Do
+        # not silently turn an error after partial output into a completed
+        # assistant message.
+        for error_key in (
+            "internalServerException",
+            "modelStreamErrorException",
+            "throttlingException",
+            "validationException",
+            "serviceUnavailableException",
+        ):
+            if error_key in event:
+                detail = event[error_key]
+                if isinstance(detail, dict):
+                    detail = detail.get("message") or detail.get("errorCode") or detail
+                raise RuntimeError(f"Bedrock streaming error: {detail}")
+
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            if isinstance(start, dict) and isinstance(start.get("start"), dict):
+                tool_use = start["start"].get("toolUse")
+                if isinstance(tool_use, dict):
+                    block_index = start.get("contentBlockIndex")
+                    if not isinstance(block_index, int):
+                        raise RuntimeError("Bedrock tool-use start omitted contentBlockIndex")
+                    tool_id = tool_use.get("toolUseId")
+                    tool_name = tool_use.get("name")
+                    if not isinstance(tool_id, str) or not tool_id:
+                        raise RuntimeError("Bedrock tool-use start omitted toolUseId")
+                    if not isinstance(tool_name, str) or not tool_name:
+                        raise RuntimeError("Bedrock tool-use start omitted tool name")
+                    tool_call_index = next_tool_call_index
+                    next_tool_call_index += 1
+                    tool_call_index_by_block[block_index] = tool_call_index
+                    yield _stream_tool_start_chunk(
+                        model,
+                        tool_call_index,
+                        tool_id,
+                        tool_name,
+                    )
+            continue
+
         if "contentBlockDelta" in event:
-            delta = event["contentBlockDelta"].get("delta", {})
+            block_delta = event["contentBlockDelta"]
+            delta = block_delta.get("delta", {})
             if text := delta.get("text"):
                 yield _stream_text_chunk(model, text)
+            elif isinstance(delta.get("toolUse"), dict):
+                input_delta = delta["toolUse"].get("input")
+                if input_delta:
+                    block_index = block_delta.get("contentBlockIndex")
+                    if not isinstance(block_index, int):
+                        raise RuntimeError("Bedrock tool-use delta omitted contentBlockIndex")
+                    tool_call_index = tool_call_index_by_block.get(block_index)
+                    if tool_call_index is None:
+                        raise RuntimeError(
+                            "Bedrock tool-use delta referenced an unknown content block"
+                        )
+                    yield _stream_tool_arguments_chunk(
+                        model,
+                        tool_call_index,
+                        input_delta if isinstance(input_delta, str) else str(input_delta),
+                    )
         elif "messageStop" in event:
             # Bedrock always includes stopReason in messageStop;
             # fail loud if missing.
@@ -531,6 +597,62 @@ async def _stream_converse(
             usage = event["metadata"].get("usage", {})
             if usage:
                 yield _stream_usage_chunk(model, usage)
+
+
+def _stream_tool_start_chunk(
+    model: str,
+    index: int,
+    tool_id: str,
+    name: str,
+) -> dict[str, Any]:
+    """Build a streaming tool-call start chunk."""
+    return {
+        "id": f"bedrock-{int(time.time())}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": tool_id,
+                            "type": "function",
+                            "function": {"name": name},
+                        }
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
+    }
+
+
+def _stream_tool_arguments_chunk(
+    model: str,
+    index: int,
+    arguments: str,
+) -> dict[str, Any]:
+    """Build a streaming tool-call argument delta chunk."""
+    return {
+        "id": f"bedrock-{int(time.time())}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {"index": index, "function": {"arguments": arguments}}
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
+    }
 
 
 def _stream_text_chunk(

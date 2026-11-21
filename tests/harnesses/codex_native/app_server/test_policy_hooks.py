@@ -334,17 +334,11 @@ async def test_still_untrusted_hints_old_codex_when_hash_missing() -> None:
         await trust_native_policy_hooks(client, cwd=_CWD)
 
 
-async def test_old_codex_skips_policy_hook_and_records_reason(
+async def test_old_codex_fails_closed_when_policy_hooks_are_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    codex < 0.129 starts without registering the policy hook.
-
-    The session must NOT be blocked (fail-open): start() returns, no
-    hooks.json is written (codex could never trust it), and the reason is
-    recorded for the web-UI notice. Fails if startup raises (the old
-    blocking behavior) or if the hook is registered against an
-    un-trustable codex.
+    codex < 0.129 cannot enforce native tool policies, so no session starts.
     """
     real_codex_home = tmp_path / "real-codex-home"
     real_codex_home.mkdir()
@@ -360,16 +354,9 @@ async def test_old_codex_skips_policy_hook_and_records_reason(
     # ap_server_url present → enforcement was intended → this is the
     # security-relevant degrade path.
     server.ap_server_url = "http://127.0.0.1:9999"
-    await server.start()
-    try:
-        # Hook was NOT registered: codex < 0.129 can never trust it.
-        assert not (codex_home / "hooks.json").exists()
-        # Reason is recorded so the caller can surface a web-UI notice.
-        assert server.policy_hook_disabled_reason is not None
-        assert "0.128.0" in server.policy_hook_disabled_reason
-        assert "0.129.0" in server.policy_hook_disabled_reason
-    finally:
-        await server.close()
+    with pytest.raises(RuntimeError, match=r"older than 0\.129\.0"):
+        await server.start()
+    assert server.proc is None
 
 
 async def test_supported_codex_registers_hook_and_enforces(
@@ -431,15 +418,11 @@ async def test_unknown_codex_version_treated_as_supported(
         await server.close()
 
 
-async def test_old_codex_with_routing_armed_keeps_user_hooks(
+async def test_old_codex_with_routing_armed_fails_before_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Arming subagent routing on old codex must not delete the user's hooks.
-
-    On codex < 0.129 no generated hooks file is written, so the user's
-    ``hooks.json`` has to stay symlinked into the private home. Fails if
-    the routing arm drops the symlink and nothing takes its place.
+    Old Codex cannot enforce policy hooks even when routing is requested.
     """
     from omnigent.inner.codex_executor import CODEX_ROUTER_DIR_ENV_VAR
 
@@ -461,27 +444,17 @@ async def test_old_codex_with_routing_armed_keeps_user_hooks(
 
     server = _test_app_server(tmp_path, codex_home, bridge_dir, workspace)
     server.env = {CODEX_ROUTER_DIR_ENV_VAR: str(router_dir)}
-    await server.start()
-    try:
-        hooks_path = codex_home / "hooks.json"
-        assert hooks_path.exists()
-        assert json.loads(hooks_path.read_text())["hooks"]["Stop"]
-        assert server.router_hooks_registered is False
-    finally:
-        await server.close()
+    with pytest.raises(RuntimeError, match=r"older than 0\.129\.0"):
+        await server.start()
+    assert server.proc is None
 
 
-async def test_trust_failure_is_fail_open_with_reason(
+async def test_trust_failure_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    A trust handshake failure degrades the session instead of blocking it.
-
-    This is the core behavior change: a hook that can't be trusted (e.g.
-    "not discovered" on an otherwise-supported codex) must NOT raise out
-    of start() — the session runs, the reason is recorded for a web-UI
-    notice. Fails if start() re-raises (the old blocking behavior) or
-    leaves the reason unset.
+    A hook that cannot be trusted must abort startup; continuing would execute
+    native tools without the configured policy gate.
     """
     real_codex_home = tmp_path / "real-codex-home"
     real_codex_home.mkdir()
@@ -503,16 +476,9 @@ async def test_trust_failure_is_fail_open_with_reason(
 
     server = _test_app_server(tmp_path, codex_home, bridge_dir, workspace)
     server.ap_server_url = "http://127.0.0.1:9999"
-    await server.start()  # must NOT raise
-    try:
-        # Hook was registered (supported codex) but trust failed → degrade.
-        assert (codex_home / "hooks.json").exists()
-        assert server.policy_hook_disabled_reason is not None
-        # The underlying trust error is carried into the reason.
-        assert "not discovered" in server.policy_hook_disabled_reason
-        assert "could not be trusted" in server.policy_hook_disabled_reason
-    finally:
-        await server.close()
+    with pytest.raises(RuntimeError, match="could not be trusted"):
+        await server.start()
+    assert server.proc is None
 
 
 def test_policy_hooks_timeout_outlasts_the_hooks_request_budget() -> None:

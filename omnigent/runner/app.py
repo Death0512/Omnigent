@@ -8281,6 +8281,27 @@ def create_runner_app(
             if _interrupt_resp is not None:
                 return _interrupt_resp
             _had_live_turn = _has_live_turn(conversation_id)
+            if _harness == "antigravity-native":
+                # Antigravity currently exposes no verified native interrupt
+                # contract.  Cancelling Omnigent's waiting task does not prove
+                # the external ``agy`` generation stopped; returning 204 here
+                # would make callers believe it was cancelled while the CLI may
+                # continue producing tools/output.  ``stop_session`` remains
+                # separate and is truthful only after terminal cleanup.
+                if _had_live_turn:
+                    await _cancel_inprocess_turn(
+                        conversation_id, settle_grace_s=_INTERRUPTED_TURN_SETTLE_GRACE_S
+                    )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "antigravity_native_interrupt_unconfirmed",
+                        "detail": (
+                            "Antigravity generation could not be confirmed stopped; "
+                            "use stop_session to terminate the native session."
+                        ),
+                    },
+                )
             await _cancel_inprocess_turn(
                 conversation_id, settle_grace_s=_INTERRUPTED_TURN_SETTLE_GRACE_S
             )

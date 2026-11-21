@@ -84,7 +84,7 @@ def test_build_vertex_url_structure() -> None:
         "https://us-central1-aiplatform.googleapis.com"
         "/v1/projects/my-proj"
         "/locations/us-central1"
-        "/publishers/google/models"
+        "/publishers/google"
     )
 
 
@@ -110,9 +110,40 @@ def test_build_vertex_url_different_region() -> None:
         "https://europe-west4-aiplatform.googleapis.com"
         "/v1/projects/proj-2"
         "/locations/europe-west4"
-        "/publishers/google/models"
+        "/publishers/google"
     )
     assert url == expected_url
+
+
+@pytest.mark.asyncio
+async def test_vertex_final_request_url_has_one_models_segment(monkeypatch) -> None:
+    """Verify the exact URL sent after GeminiAdapter appends the model path."""
+    from omnigent.llms.adapters.vertex import VertexAdapter
+
+    adapter = VertexAdapter()
+    captured: dict[str, str] = {}
+
+    async def _headers(*, api_key_override=None):
+        return {}
+
+    async def _send(url, *_args, **_kwargs):
+        captured["url"] = url
+        return {"choices": []}
+
+    monkeypatch.setattr(adapter, "_get_headers", _headers)
+    monkeypatch.setattr(adapter, "_send_request", _send)
+    await adapter.chat_completions(
+        [{"role": "user", "content": "hello"}],
+        "gemini-test",
+        None,
+        False,
+        {},
+        connection_params={"project": "sample-project", "location": "us-central1"},
+    )
+    assert captured["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/sample-project"
+        "/locations/us-central1/publishers/google/models/gemini-test:generateContent"
+    )
 
 
 # ── Resolve preserves extra keys ─────────────────────────

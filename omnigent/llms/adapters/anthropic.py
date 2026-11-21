@@ -606,7 +606,8 @@ async def _stream_to_chat_chunks(
     """
     metadata: dict[str, str] = {}
     usage_data: dict[str, int] = {}
-    tool_call_index = -1
+    tool_call_index_by_block: dict[int, int] = {}
+    next_tool_call_index = 0
 
     async for line in lines:
         if not line.startswith("data: "):
@@ -614,6 +615,19 @@ async def _stream_to_chat_chunks(
 
         data = json.loads(line[len("data: ") :])
         event_type = data.get("type")
+
+        # Anthropic can send an ``error`` event after already emitting text
+        # or tool-call deltas.  Treat it as a failed stream rather than letting
+        # the caller observe a partial answer as a successful completion.
+        if event_type == "error":
+            error = data.get("error")
+            if isinstance(error, dict):
+                error_type = error.get("type")
+                message = error.get("message")
+                detail = ": ".join(str(value) for value in (error_type, message) if value)
+            else:
+                detail = str(error or data)
+            raise RuntimeError(f"Anthropic streaming error: {detail}")
 
         if event_type == "message_start":
             msg = data.get("message", {})
@@ -626,7 +640,12 @@ async def _stream_to_chat_chunks(
         if event_type == "content_block_start":
             block = data.get("content_block", {})
             if block.get("type") == "tool_use":
-                tool_call_index += 1
+                block_index = data.get("index")
+                if not isinstance(block_index, int):
+                    raise RuntimeError("Anthropic tool-use start omitted block index")
+                tool_call_index = next_tool_call_index
+                next_tool_call_index += 1
+                tool_call_index_by_block[block_index] = tool_call_index
                 yield _make_chunk(
                     metadata,
                     delta={
@@ -650,6 +669,12 @@ async def _stream_to_chat_chunks(
                     delta={"content": delta_block["text"]},
                 )
             elif delta_block.get("type") == "input_json_delta":
+                block_index = data.get("index")
+                tool_call_index = tool_call_index_by_block.get(block_index)
+                if tool_call_index is None:
+                    raise RuntimeError(
+                        "Anthropic tool-use delta referenced an unknown block index"
+                    )
                 yield _make_chunk(
                     metadata,
                     delta={
@@ -669,7 +694,12 @@ async def _stream_to_chat_chunks(
             if delta_usage := data.get("usage"):
                 usage_data["output_tokens"] = delta_usage.get("output_tokens", 0)
             stop_reason = data.get("delta", {}).get("stop_reason")
-            finish = "length" if stop_reason == "max_tokens" else "stop"
+            if not isinstance(stop_reason, str) or not stop_reason:
+                raise RuntimeError("Anthropic stream ended with a missing stop_reason")
+            finish = {
+                "max_tokens": "length",
+                "tool_use": "tool_calls",
+            }.get(stop_reason, "stop")
             yield _make_chunk(
                 metadata,
                 delta={},

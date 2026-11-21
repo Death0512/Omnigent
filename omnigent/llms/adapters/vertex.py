@@ -207,5 +207,7 @@ def _build_vertex_url(project: str, location: str) -> str:
         f"https://{location}-aiplatform.googleapis.com"
         f"/v1/projects/{project}"
         f"/locations/{location}"
-        f"/publishers/google/models"
+        # GeminiAdapter appends ``/models/{model}`` to its base URL.  Keep the
+        # publisher path here, otherwise requests become ``/models/models/...``.
+        f"/publishers/google"
     )

@@ -1883,6 +1883,10 @@ def test_seed_isolated_agy_home_trusts_workspace_in_isolated_settings(
     isolated = json.loads(isolated_settings.read_text(encoding="utf-8"))
     assert isolated["colorScheme"] == "solarized dark"
     assert isolated["trustedWorkspaces"] == ["/existing", str(workspace.resolve())]
+    assert isolated["allowNonWorkspaceAccess"] is False
+    assert isolated["agentMode"] == "auto"
+    assert isolated["enableTerminalSandbox"] is True
+    assert isolated["toolPermission"] == "proceed-in-sandbox"
     # The user's real agy settings are never modified by this bridge-scoped seed.
     assert json.loads(real_settings.read_text(encoding="utf-8")) == {
         "colorScheme": "dark",
@@ -1927,16 +1931,20 @@ def test_seed_isolated_agy_home_copies_real_settings_as_base(
     assert isolated["gcp"] == {"project": "acme-prod", "location": "global"}
     assert isolated["theme"] == "dark"
     assert isolated["trustedWorkspaces"] == ["/real/repo", str(workspace.resolve())]
+    assert isolated["allowNonWorkspaceAccess"] is False
+    assert isolated["agentMode"] == "auto"
+    assert isolated["enableTerminalSandbox"] is True
+    assert isolated["toolPermission"] == "proceed-in-sandbox"
     # The real settings file is never modified.
     assert json.loads(real_settings.read_text(encoding="utf-8"))["trustedWorkspaces"] == [
         "/real/repo"
     ]
 
 
-def test_seed_isolated_agy_home_never_clobbers_existing_isolated_settings(
+def test_seed_isolated_agy_home_hardens_existing_isolated_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A re-seed keeps the isolated settings file — per-session edits survive."""
+    """Re-seeding preserves harmless settings but reapplies mandatory safety keys."""
     fake_home = tmp_path / "real-home"
     real_settings = fake_home / ".gemini" / "antigravity-cli" / "settings.json"
     real_settings.parent.mkdir(parents=True)
@@ -1947,11 +1955,46 @@ def test_seed_isolated_agy_home_never_clobbers_existing_isolated_settings(
     bridge_dir.mkdir()
     iso_settings = agy_gemini_dir(bridge_dir) / "antigravity-cli" / "settings.json"
     iso_settings.parent.mkdir(parents=True)
-    iso_settings.write_text(json.dumps({"model": "session-pick"}), encoding="utf-8")
+    iso_settings.write_text(
+        json.dumps(
+            {
+                "model": "session-pick",
+                "allowNonWorkspaceAccess": True,
+                "agentMode": "default",
+                "enableTerminalSandbox": False,
+                "toolPermission": "always-proceed",
+                "permissions": {"allow": ["command(*)"], "deny": ["read_file(~/secret)"]},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     seed_isolated_agy_home(bridge_dir)
 
-    assert json.loads(iso_settings.read_text(encoding="utf-8")) == {"model": "session-pick"}
+    isolated = json.loads(iso_settings.read_text(encoding="utf-8"))
+    assert isolated["model"] == "session-pick"
+    assert isolated["allowNonWorkspaceAccess"] is False
+    assert isolated["agentMode"] == "auto"
+    assert isolated["enableTerminalSandbox"] is True
+    assert isolated["toolPermission"] == "proceed-in-sandbox"
+    assert isolated["permissions"]["allow"] == []
+    assert isolated["permissions"]["deny"] == ["read_file(~/secret)"]
+
+
+def test_seed_isolated_agy_home_rejects_malformed_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed global settings do not silently launch with unknown policy."""
+    fake_home = tmp_path / "real-home"
+    settings = fake_home / ".gemini" / "antigravity-cli" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: fake_home))
+
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    with pytest.raises(RuntimeError, match="invalid settings"):
+        seed_isolated_agy_home(bridge_dir)
 
 
 def test_seed_isolated_agy_home_prefers_real_onboarding_marker(

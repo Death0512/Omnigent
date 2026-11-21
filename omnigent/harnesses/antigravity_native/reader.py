@@ -787,20 +787,20 @@ async def _post_event(
     client: httpx.AsyncClient,
     session_id: str,
     event: OutboundEvent,
-) -> None:
+) -> bool:
     """
     POST one mapped event with the shared bounded-retry delivery loop.
 
     :param client: HTTP client for Omnigent event posts.
     :param session_id: Omnigent conversation id, e.g. ``"conv_abc123"``.
     :param event: The mapped event to deliver.
-    :returns: None. Delivery failures are logged inside the retry loop; an
-        ambiguous conversation-item failure is intentionally not retried (a
-        re-post would duplicate the item).
+    :returns: ``True`` only when the server acknowledged the event with a
+        successful response.  A failed or ambiguous delivery is ``False``;
+        callers must not advance their de-duplication cursor in that case.
     """
     url = f"/v1/sessions/{url_component(session_id)}/events"
     payload: dict[str, object] = {"type": event.event_type, "data": event.data}
-    await post_session_event_with_retry(
+    response = await post_session_event_with_retry(
         client=client,
         url=url,
         payload=payload,
@@ -811,6 +811,7 @@ async def _post_event(
         retry_delay=lambda attempt: _POST_RETRY_DELAY_SECONDS * attempt,
         logger_name=__name__,
     )
+    return response is not None and response.status_code < 400
 
 
 def _resolve_cascade_id(bridge_dir: Path) -> str | None:
@@ -1694,14 +1695,12 @@ async def _process_committed_step(
     """
     key = _step_key(step)
     if key not in state.seen:
-        if _is_settled(step):
-            state.seen.add(key)
         # Close any live block for this step BEFORE its committed item. Done
         # here rather than in the stream handler because the poll loop commits
         # through this same function: closing in only one path leaves every
         # poll-committed step permanently in-flight, and the server then
         # replays it to each later subscriber as a stale duplicate.
-        await _close_planner_delta_stream(
+        close_delivered = await _close_planner_delta_stream(
             step,
             client=client,
             session_id=session_id,
@@ -1709,27 +1708,25 @@ async def _process_committed_step(
             prefixes=state.prefixes,
             delta_chunks=state.delta_chunks,
         )
-        state.turn_active = await _emit_step(
+        state.turn_active, step_delivered = await _emit_step(
             step,
             client=client,
             session_id=session_id,
             cascade_id=cascade_id,
             turn_active=state.turn_active,
         )
-        # Telemetry: model-change detection on USER_INPUT (design §10.4).
-        await _maybe_emit_model_change(
-            step,
-            client=client,
-            session_id=session_id,
-            state=state,
-        )
-        # Telemetry: token usage on PLANNER_RESPONSE DONE (design §10.3).
-        await _maybe_emit_session_usage(
-            step,
-            client=client,
-            session_id=session_id,
-            state=state,
-        )
+        # Advance the de-duplication cursor only after every primary event for
+        # the step was acknowledged.  A transient POST failure must leave the
+        # step eligible for replay on the next poll/reconnect.
+        if _is_settled(step) and close_delivered and step_delivered:
+            model_delivered = await _maybe_emit_model_change(
+                step, client=client, session_id=session_id, state=state
+            )
+            usage_delivered = await _maybe_emit_session_usage(
+                step, client=client, session_id=session_id, state=state
+            )
+            if model_delivered and usage_delivered:
+                state.seen.add(key)
     _maybe_handle_interaction(
         step,
         key=key,
@@ -2160,7 +2157,7 @@ async def _process_stream_step(
     # prefix trackers so a later same-index step (e.g. an agy timeout-retry reusing
     # the slot) starts a fresh delta stream rather than diffing against stale text.
     idx = _step_index(step)
-    if idx is not None:
+    if idx is not None and _is_settled(step) and _step_key(step) in state.seen:
         state.prefixes.pop(idx, None)
         state.delta_chunks.pop(idx, None)
         state.reasoning_prefixes.pop(idx, None)
@@ -2198,7 +2195,7 @@ async def _close_planner_delta_stream(
     cascade_id: str,
     prefixes: dict[int, str],
     delta_chunks: dict[int, int],
-) -> None:
+) -> bool:
     """
     Flush a committed planner step's remaining suffix as a ``final=True`` delta.
 
@@ -2223,17 +2220,18 @@ async def _close_planner_delta_stream(
     """
     idx = _step_index(step)
     if idx is None:
-        return
+        return True
     text = _committed_planner_text(step)
     if text is None:
-        return
+        return True
     forwarded = prefixes.get(idx)
     if forwarded is None:
         # Never streamed (committed straight from a poll frame): the committed
         # item stands alone, so there is no live block to close.
-        return
+        return True
     suffix = text[len(forwarded) :] if text.startswith(forwarded) else text
-    await _post_event(
+    next_index = _next_delta_index(delta_chunks, idx)
+    delivered = await _post_event(
         client,
         session_id,
         output_text_delta_event(
@@ -2241,13 +2239,20 @@ async def _close_planner_delta_stream(
             step_idx=idx,
             delta=suffix,
             final=True,
-            index=_next_delta_index(delta_chunks, idx),
+            index=next_index,
         ),
     )
     # What the server's buffer now holds — which is the committed text only when
     # the stream was a true prefix of it. Keeps the tracker's meaning intact for
     # the poll path, which does not clear it per step.
-    prefixes[idx] = forwarded + suffix
+    if delivered:
+        prefixes[idx] = forwarded + suffix
+    else:
+        # The server did not observe this chunk. Reuse its sequence number on
+        # the next attempt; advancing it on a failed POST would make the server
+        # reject the replay as an out-of-order gap.
+        delta_chunks[idx] = next_index
+    return delivered
 
 
 def _next_delta_index(delta_chunks: dict[int, int], idx: int) -> int:
@@ -2330,7 +2335,7 @@ async def _emit_partial_delta(
     cascade_id: str,
     prefixes: dict[int, str],
     delta_chunks: dict[int, int],
-) -> None:
+) -> bool:
     """
     Emit the NEW suffix of a GENERATING planner step's partial text as a delta.
 
@@ -2349,14 +2354,15 @@ async def _emit_partial_delta(
     :param prefixes: Per-``step_index`` forwarded-prefix tracker (mutated here).
     :param delta_chunks: Per-``step_index`` emitted-chunk counter (mutated here;
         see :func:`_next_delta_index`).
-    :returns: None.
+    :returns: ``True`` when the delta is acknowledged or no delta is needed;
+        otherwise ``False`` so the reader can retry the frame.
     """
     idx = _step_index(step)
     if idx is None:
-        return
+        return True
     text = _partial_planner_text(step)
     if text is None:
-        return
+        return True
     forwarded = prefixes.get(idx, "")
     # Register the step as streaming even when this frame yields nothing, so the
     # committed close still knows there is a live block of ours to retire.
@@ -2368,7 +2374,8 @@ async def _emit_partial_delta(
     # cut the next delta from the wrong offset and repeat the overlap.
     if text.startswith(forwarded) and len(text) > len(forwarded):
         suffix = text[len(forwarded) :]
-        await _post_event(
+        next_index = _next_delta_index(delta_chunks, idx)
+        delivered = await _post_event(
             client,
             session_id,
             output_text_delta_event(
@@ -2376,10 +2383,14 @@ async def _emit_partial_delta(
                 step_idx=idx,
                 delta=suffix,
                 final=False,
-                index=_next_delta_index(delta_chunks, idx),
+                index=next_index,
             ),
         )
+        if not delivered:
+            delta_chunks[idx] = next_index
+            return False
         prefixes[idx] = text
+    return True
 
 
 async def _emit_partial_reasoning_delta(
@@ -2388,7 +2399,7 @@ async def _emit_partial_reasoning_delta(
     client: httpx.AsyncClient,
     session_id: str,
     reasoning_prefixes: dict[int, str],
-) -> None:
+) -> bool:
     """
     Emit the NEW suffix of a GENERATING planner step's ``thinking`` as a delta.
 
@@ -2412,21 +2423,22 @@ async def _emit_partial_reasoning_delta(
     :param session_id: Omnigent conversation id to mirror into.
     :param reasoning_prefixes: Per-``step_index`` forwarded-prefix tracker
         (mutated here); a step's first emitted delta also records its membership.
-    :returns: None.
+    :returns: ``True`` when the reasoning delta is acknowledged or no delta is
+        needed; otherwise ``False`` so the reader can retry the frame.
     """
     idx = _step_index(step)
     if idx is None:
-        return
+        return True
     text = _partial_planner_thinking(step)
     if text is None:
-        return
+        return True
     # Absent ⇒ this is the step's first reasoning delta (carries ``started``).
     started = idx not in reasoning_prefixes
     forwarded = reasoning_prefixes.get(idx, "")
     # As on the text path, only forward growth that extends the forwarded prefix.
     if text.startswith(forwarded) and len(text) > len(forwarded):
         suffix = text[len(forwarded) :]
-        await _post_event(
+        delivered = await _post_event(
             client,
             session_id,
             output_reasoning_delta_event(
@@ -2442,7 +2454,10 @@ async def _emit_partial_reasoning_delta(
     # ``_close_planner_delta_stream`` sends whatever is left. The cost here is that
     # a rewrite can repeat an overlap in the reasoning block — cosmetic, and not
     # part of the message the server retires by byte-equality.
+        if not delivered:
+            return False
     reasoning_prefixes[idx] = text
+    return True
 
 
 async def _emit_step(
@@ -2452,7 +2467,7 @@ async def _emit_step(
     session_id: str,
     cascade_id: str,
     turn_active: bool,
-) -> bool:
+) -> tuple[bool, bool]:
     """
     Emit one new step's status edges + mapped conversation items.
 
@@ -2466,29 +2481,36 @@ async def _emit_step(
     :param session_id: Omnigent conversation id to mirror into.
     :param cascade_id: agy cascade id (namespaces response/call ids).
     :param turn_active: Whether a turn is currently considered open on entry.
-    :returns: The updated ``turn_active`` flag after this step.
+    :returns: Updated turn-active state and whether every emitted event was
+        acknowledged.
     """
     if _is_user_turn_step(step) and not turn_active:
+        if not await _post_event(client, session_id, _status_event(_STATUS_RUNNING)):
+            return turn_active, False
         turn_active = True
-        await _post_event(client, session_id, _status_event(_STATUS_RUNNING))
 
+    delivered = True
     for event in map_step_to_events(step, conversation_id=cascade_id):
         # The server deduplicates replayed items across reader/process restarts.
         # Include item type so a tool call and its result remain separate items.
         identity = json.dumps([cascade_id, _step_key(step), event.data["item_type"]])
         event.data["source_id"] = "agy:" + hashlib.sha256(identity.encode()).hexdigest()
-        await _post_event(client, session_id, event)
+        delivered = await _post_event(client, session_id, event) and delivered
+        if not delivered:
+            return turn_active, False
 
     if _is_turn_close_step(step) and turn_active:
-        turn_active = False
         # An ERROR planner closes the turn as FAILED, not a clean idle: a model /
         # safety-policy / rate-limit / provider-overload error must surface as a
         # failed turn (alongside the error item the mapper now emits), not a
         # silent empty success that looks identical to a normal reply (#6).
         close_status = _STATUS_FAILED if _step_is_error_planner(step) else _STATUS_IDLE
-        await _post_event(client, session_id, _status_event(close_status))
+        if await _post_event(client, session_id, _status_event(close_status)):
+            turn_active = False
+        else:
+            return turn_active, False
 
-    return turn_active
+    return turn_active, delivered
 
 
 def _step_is_error_planner(step: dict[str, object]) -> bool:
@@ -2789,7 +2811,7 @@ async def _maybe_emit_session_usage(
     client: httpx.AsyncClient,
     session_id: str,
     state: _ReaderState,
-) -> None:
+) -> bool:
     """
     Emit ``external_session_usage`` when a PLANNER_RESPONSE DONE carries usage.
 
@@ -2814,21 +2836,28 @@ async def _maybe_emit_session_usage(
     :param client: HTTP client for Omnigent event posts.
     :param session_id: Omnigent conversation id.
     :param state: Per-run trackers (accumulators + port + model_catalog).
-    :returns: None.
+    :returns: ``True`` when usage telemetry is acknowledged or no event is
+        needed; otherwise ``False`` so the caller can retry the step.
     """
     per_call = _model_usage_from_step(step)
     if not per_call:
-        return
+        return True
 
     def _int_field(d: dict[str, object], key: str) -> int:
         """Return ``d[key]`` as an int, or 0 when absent / not an int."""
         val = d.get(key, 0)
         return val if isinstance(val, int) else 0
 
-    # Accumulate per-call values into running session totals (SET semantics).
-    state.cumulative_input_tokens += _int_field(per_call, "cumulative_input_tokens")
-    state.cumulative_output_tokens += _int_field(per_call, "cumulative_output_tokens")
-    state.cumulative_cache_read_input_tokens += _int_field(
+    # Build prospective SET-semantics totals, but commit the counters only after
+    # the event is acknowledged. Otherwise a retry doubles usage after a lost
+    # response or transient POST failure.
+    input_tokens = state.cumulative_input_tokens + _int_field(
+        per_call, "cumulative_input_tokens"
+    )
+    output_tokens = state.cumulative_output_tokens + _int_field(
+        per_call, "cumulative_output_tokens"
+    )
+    cache_tokens = state.cumulative_cache_read_input_tokens + _int_field(
         per_call, "cumulative_cache_read_input_tokens"
     )
     # Resolve the raw model enum to a displayName if the catalog is available.
@@ -2839,18 +2868,18 @@ async def _maybe_emit_session_usage(
         display_name = _resolve_display_name(model_enum, catalog)
     # Build the cumulative payload (SET-semantics running totals).
     payload: dict[str, object] = {}
-    if state.cumulative_input_tokens > 0:
-        payload["cumulative_input_tokens"] = state.cumulative_input_tokens
-    if state.cumulative_output_tokens > 0:
-        payload["cumulative_output_tokens"] = state.cumulative_output_tokens
-    if state.cumulative_cache_read_input_tokens > 0:
-        payload["cumulative_cache_read_input_tokens"] = state.cumulative_cache_read_input_tokens
+    if input_tokens > 0:
+        payload["cumulative_input_tokens"] = input_tokens
+    if output_tokens > 0:
+        payload["cumulative_output_tokens"] = output_tokens
+    if cache_tokens > 0:
+        payload["cumulative_cache_read_input_tokens"] = cache_tokens
     if display_name is not None:
         payload["model"] = display_name
     if not payload:
-        return
+        return True
     step_idx = _step_index(step) or 0
-    await _post_event(
+    delivered = await _post_event(
         client,
         session_id,
         OutboundEvent(
@@ -2859,6 +2888,11 @@ async def _maybe_emit_session_usage(
             step_index=step_idx,
         ),
     )
+    if delivered:
+        state.cumulative_input_tokens = input_tokens
+        state.cumulative_output_tokens = output_tokens
+        state.cumulative_cache_read_input_tokens = cache_tokens
+    return delivered
 
 
 async def _maybe_emit_model_change(
@@ -2867,7 +2901,7 @@ async def _maybe_emit_model_change(
     client: httpx.AsyncClient,
     session_id: str,
     state: _ReaderState,
-) -> None:
+) -> bool:
     """
     Emit ``external_model_change`` when a USER_INPUT step carries a new model enum.
 
@@ -2884,17 +2918,18 @@ async def _maybe_emit_model_change(
     :param client: HTTP client for Omnigent event posts.
     :param session_id: Omnigent conversation id.
     :param state: Per-run trackers (posted_model_enum + model_catalog + port).
-    :returns: None.
+    :returns: ``True`` when the model-change event is acknowledged or no event
+        is needed; otherwise ``False`` so the caller can retry the step.
     """
     model_enum = _requested_model_enum_from_step(step)
     if model_enum is None:
-        return
+        return True
     if model_enum == state.posted_model_enum:
-        return
+        return True
     catalog = await _ensure_catalog(state)
     display_name = _resolve_display_name(model_enum, catalog)
     step_idx = _step_index(step) or 0
-    await _post_event(
+    delivered = await _post_event(
         client,
         session_id,
         OutboundEvent(
@@ -2903,7 +2938,9 @@ async def _maybe_emit_model_change(
             step_index=step_idx,
         ),
     )
-    state.posted_model_enum = model_enum
+    if delivered:
+        state.posted_model_enum = model_enum
+    return delivered
 
 
 async def _ensure_catalog(state: _ReaderState) -> dict[str, object]:

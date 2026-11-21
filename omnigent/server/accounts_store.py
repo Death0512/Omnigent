@@ -27,6 +27,7 @@ from omnigent.db.account_authority import (
 )
 from omnigent.db.db_models import (
     SqlAccountToken,
+    SqlAgent,
     SqlConnection,
     SqlConversationMetadata,
     SqlDeviceGrant,
@@ -44,6 +45,7 @@ from omnigent.db.db_models import (
 from omnigent.db.enum_codecs import (
     decode_account_token_kind,
     encode_account_token_kind,
+    encode_agent_kind,
     encode_device_grant_status,
     encode_scheduled_task_state,
 )
@@ -555,6 +557,16 @@ class SqlAlchemyAccountStore:
                 delete(SqlSessionPermission).where(
                     SqlSessionPermission.workspace_id == current_workspace_id(),
                     SqlSessionPermission.user_id == user_id,
+                )
+            )
+            # User agents are addressed by owner identity in the agent store.
+            # Remove them with the account tombstone so a later registration
+            # of the same username cannot inherit the deleted user's agents.
+            session.execute(
+                delete(SqlAgent).where(
+                    SqlAgent.workspace_id == current_workspace_id(),
+                    SqlAgent.kind == encode_agent_kind("user"),
+                    SqlAgent.created_by == user_id,
                 )
             )
             _revoke_durable_authority(session, user_id, now=int(time.time()))

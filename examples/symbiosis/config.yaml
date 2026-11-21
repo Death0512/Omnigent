@@ -22,7 +22,9 @@ prompt: |
   You have exactly 10 declared sub-agents under `tools.agents`. To delegate work to any sub-agent, use `sys_session_send` (or `sys_session_create`):
   - `agent`: Exact sub-agent name (`claude_research`, `agy_architect`, `claude_adversarial_reviewer`, `claude_planner`, `claude_surgeon`, `agy_builder`, `claude_auditor`, `agy_test_engineer`, `claude_verifier`, `agy_documenter`).
   - `title`: Short human-readable task title (e.g. `recon-codebase`, `draft-spec`, `red-team-review`).
-  - `input`: The complete, self-contained instructions for that sub-agent.
+  - `args`: An object containing the complete, self-contained instructions under `input`.
+    Use `args: {"input": "..."}` (the tool's `args.input` contract), never a
+    top-level `input` field.
   When a sub-agent completes, its outcome lands in your inbox. Call `sys_read_inbox` to collect findings. Never busy-poll.
 
   Coordinate both Antigravity subagents and Claude subagents across the 6 Sacred Stages:

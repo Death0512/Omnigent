@@ -406,6 +406,77 @@ class NativeInterruptRunner:
         key = agent.key
         if key == "claude":
             return await self._claude_stop(conv_id)
+        if key == "antigravity":
+            # Antigravity has no verified in-process cancel RPC.  A full
+            # session stop is nevertheless authoritative because the runner
+            # owns the terminal resource: close it, stop its forwarder, and
+            # only then publish the confirmed cancellation.
+            from omnigent.entities.session_resources import terminal_resource_id
+            from omnigent.runner.tool_dispatch import _publish_terminal_deleted_event
+
+            terminal_registry = self._resource_registry.terminal_registry
+            if terminal_registry is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "antigravity_native_stop_unconfirmed",
+                        "detail": "The runner cannot verify or close the Antigravity terminal.",
+                    },
+                )
+            terminals = list(terminal_registry.list_for_conversation(conv_id))
+            if not terminals:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "antigravity_native_stop_unconfirmed",
+                        "detail": "No registered Antigravity terminal was available to stop.",
+                    },
+                )
+            for entry in terminals:
+                terminal_id = terminal_resource_id(entry.terminal_name, entry.session_key)
+                try:
+                    closed = await self._resource_registry.close_terminal(conv_id, terminal_id)
+                except (RuntimeError, OSError):
+                    self._logger.warning(
+                        "Failed to close Antigravity terminal %s for session %s",
+                        terminal_id,
+                        conv_id,
+                        exc_info=True,
+                    )
+                    closed = False
+                if not closed:
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "antigravity_native_stop_unconfirmed",
+                            "detail": "The Antigravity terminal did not confirm shutdown.",
+                        },
+                    )
+                _publish_terminal_deleted_event(
+                    conversation_id=conv_id,
+                    terminal_name=entry.terminal_name,
+                    publish_event=self._publish_event,
+                    session_key=entry.session_key,
+                )
+            await _cancel_auto_forwarder_task(conv_id)
+            self._publish_event(conv_id, {"type": "session.status", "status": "idle"})
+            self.clear_pending_interrupt(conv_id)
+            delivery_ack = self._mark_subagent_terminal_and_wake(
+                conv_id,
+                status="cancelled",
+                output=None,
+                confirmed_cancellation=True,
+            )
+            if not delivery_ack.delivered and (
+                delivery_ack.entry is not None or conv_id in self._session_sub_agent_names
+            ):
+                self._logger.warning(
+                    "antigravity-native stop succeeded but sub-agent delivery was "
+                    "not confirmed; session=%s reason=%s",
+                    conv_id,
+                    delivery_ack.reason,
+                )
+            return Response(status_code=204)
         if key in ("codex", "pi", "opencode"):
             return await self.interrupt(harness_name, conv_id)
         spec = _UNIFORM_STOP.get(key)

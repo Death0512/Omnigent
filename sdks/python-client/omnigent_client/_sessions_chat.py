@@ -81,7 +81,7 @@ from ._tool_handler import (
     ToolCallEndCtx,
     ToolCallStartCtx,
 )
-from ._types import File, Response
+from ._types import ErrorInfo, File, Response
 
 # Text block types accepted when falling back from streamed deltas
 # to final assistant message content.
@@ -1281,17 +1281,52 @@ class SessionsChat:
         """
         text_parts: list[str] = []
         produced: list[File] = []
+        # EOF without a response terminal event is not proof of success.  Keep
+        # any received text, but mark it incomplete so convenience callers do
+        # not accidentally consume a truncated answer as a completed result.
+        status = "incomplete"
+        error: ErrorInfo | None = None
+        incomplete_reason: str | None = "stream_ended_without_terminal_event"
         async for event in self.send(input, files=files):
             if isinstance(event, OutputTextDeltaEvent):
                 if event.delta:
                     text_parts.append(event.delta)
             elif isinstance(event, OutputItemDoneEvent) and not text_parts:
                 text_parts.extend(_assistant_text_from_output_item(event.item))
-            elif isinstance(event, CompletedEvent) and not text_parts:
-                text_parts.extend(_assistant_text_from_response(event.response.output))
+            elif isinstance(event, CompletedEvent):
+                status = event.response.status
+                incomplete_reason = None
+                if not text_parts:
+                    text_parts.extend(_assistant_text_from_response(event.response.output))
+            elif isinstance(event, FailedEvent):
+                status = event.response.status
+                response_error = event.response.error
+                if response_error is not None:
+                    error = ErrorInfo(
+                        code=str(response_error.code),
+                        message=str(response_error.message),
+                    )
+                if not text_parts:
+                    text_parts.extend(_assistant_text_from_response(event.response.output))
+            elif isinstance(event, IncompleteEvent):
+                status = event.response.status
+                details = event.response.incomplete_details
+                incomplete_reason = details.reason if details is not None else None
+                if not text_parts:
+                    text_parts.extend(_assistant_text_from_response(event.response.output))
+            elif isinstance(event, CancelledEvent):
+                status = event.response.status
+                if not text_parts:
+                    text_parts.extend(_assistant_text_from_response(event.response.output))
             elif isinstance(event, OutputFileDoneEvent):
                 produced.append(await self._fetch_file(event))
-        return QueryResult(text="".join(text_parts), files=produced)
+        return QueryResult(
+            text="".join(text_parts),
+            files=produced,
+            status=status,
+            error=error,
+            incomplete_reason=incomplete_reason,
+        )
 
     def _stream_query(
         self,

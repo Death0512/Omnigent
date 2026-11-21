@@ -679,10 +679,11 @@ class SqlAlchemyPermissionStore(PermissionStore):
             immediate=True,
         )
         # resolve_access cache (see _RESOLVE_ACCESS_CACHE_TTL_ENV). An LRU keyed
-        # (conversation_id, user_id, account_generation) -> (expiry, access). IDs are
-        # globally unique, so grant/revoke can drop a whole session's entries —
-        # including the shared __public__ grant, which affects every user of
-        # that session — without depending on the ambient workspace context.
+        # (workspace_id, conversation_id, user_id, account_generation) ->
+        # (expiry, access). Workspace is part of the key even when deployments
+        # normally generate globally unique conversation IDs: a cache must not
+        # turn an identifier collision or a reused session ID into cross-tenant
+        # authorization.
         # The hard entry cap bounds memory on a long-lived replica. Per store
         # instance, so each replica caches independently and tests get a fresh
         # cache with each store. ``_resolve_cache_clock`` is injectable for
@@ -690,7 +691,7 @@ class SqlAlchemyPermissionStore(PermissionStore):
         self._resolve_cache_ttl_s = _resolve_access_cache_ttl_s()
         self._resolve_cache_max_entries = _resolve_access_cache_max_entries()
         self._resolve_cache: collections.OrderedDict[
-            tuple[str, str, str | None], tuple[float, ResolvedAccess]
+            tuple[int, str, str, str | None], tuple[float, ResolvedAccess]
         ] = collections.OrderedDict()
         self._resolve_cache_lock = threading.Lock()
         self._resolve_cache_clock: Callable[[], float] = time.monotonic
@@ -1159,7 +1160,7 @@ class SqlAlchemyPermissionStore(PermissionStore):
     def _resolve_cache_lookup(self, conversation_id: str, user_id: str) -> ResolvedAccess | None:
         """Return a live cached resolve_access result, or ``None`` on miss/expiry."""
         now = self._resolve_cache_clock()
-        key = (conversation_id, user_id, account_generation(user_id))
+        key = (current_workspace_id(), conversation_id, user_id, account_generation(user_id))
         with self._resolve_cache_lock:
             entry = self._resolve_cache.get(key)
             if entry is None:
@@ -1190,7 +1191,7 @@ class SqlAlchemyPermissionStore(PermissionStore):
         be stored on top of the eviction it already performed. Enforces the LRU
         entry cap so the cache cannot grow without bound on a long-lived replica.
         """
-        key = (conversation_id, user_id, account_generation(user_id))
+        key = (current_workspace_id(), conversation_id, user_id, account_generation(user_id))
         expiry = self._resolve_cache_clock() + self._resolve_cache_ttl_s
         with self._resolve_cache_lock:
             if generation != self._resolve_cache_generation:
@@ -1206,7 +1207,12 @@ class SqlAlchemyPermissionStore(PermissionStore):
         """Drop every cached decision for one session (all users + ``__public__``)."""
         with self._resolve_cache_lock:
             self._resolve_cache_generation += 1
-            stale = [key for key in self._resolve_cache if key[0] == conversation_id]
+            workspace_id = current_workspace_id()
+            stale = [
+                key
+                for key in self._resolve_cache
+                if key[0] == workspace_id and key[1] == conversation_id
+            ]
             for key in stale:
                 del self._resolve_cache[key]
 

@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 
 from omnigent.db.account_authority import account_checks_scope
 from omnigent.db.db_models import SqlWorkflowShare, workspace_scope
-from omnigent.entities import ScheduledTaskPermission, SessionPermission, WorkflowPermission
+from omnigent.entities import (
+    ResolvedAccess,
+    ScheduledTaskPermission,
+    SessionPermission,
+    WorkflowPermission,
+)
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.server import session_sharing
 from omnigent.server.auth import (
@@ -1344,6 +1349,30 @@ def test_resolve_access_caches_positive_result(
     assert first.user_grant_level == 2
     assert second == first
     assert count[0] == 1, f"second resolve must hit cache (no checkout), got {count[0]}"
+
+
+def test_resolve_access_cache_is_scoped_to_workspace(store: SqlAlchemyPermissionStore) -> None:
+    """A cached grant in one workspace cannot authorize another workspace."""
+    store._resolve_cache_ttl_s = 60.0
+    conversation_id = uuid.uuid4().hex
+    user_id = "shared-user"
+    granted = ResolvedAccess(
+        is_admin=True,
+        user_grant_level=LEVEL_OWNER,
+        public_grant_level=None,
+    )
+
+    with workspace_scope(101):
+        generation = store._resolve_cache_generation_now()
+        store._resolve_cache_store(conversation_id, user_id, granted, generation)
+
+    with workspace_scope(202):
+        actual = store.resolve_access(user_id, conversation_id)
+
+    assert actual != granted
+    assert actual.is_admin is False
+    assert actual.user_grant_level is None
+    assert actual.public_grant_level is None
 
 
 def test_resolve_access_does_not_cache_no_access(

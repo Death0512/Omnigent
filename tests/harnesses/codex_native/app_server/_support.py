@@ -195,7 +195,7 @@ def _test_app_server(
     )
 
 
-# --- Codex version gate + fail-open startup ---------------------------
+# --- Codex version gate + fail-closed startup --------------------------
 
 
 def _set_codex_version(

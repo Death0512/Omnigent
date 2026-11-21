@@ -6,6 +6,7 @@ server's ``text/event-stream`` responses.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -97,10 +98,15 @@ async def parse_sse_stream(
     :yields: Typed :class:`StreamEvent` instances.
     """
     buf = ""
+    # ``httpx.aiter_bytes()`` is allowed to split a UTF-8 code point across
+    # arbitrary transport chunks.  Decode incrementally instead of decoding
+    # each chunk independently with replacement: replacement would silently
+    # corrupt non-ASCII assistant output before JSON/SSE parsing sees it.
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
     current_event: str | None = None
 
     async for chunk in byte_stream:
-        buf += chunk.decode("utf-8", errors="replace")
+        buf += decoder.decode(chunk, final=False)
         while "\n" in buf:
             line, buf = buf.split("\n", 1)
             line = line.rstrip("\r")
@@ -130,6 +136,28 @@ async def parse_sse_stream(
                     current_event = None
             elif line == "":
                 current_event = None
+
+    # A compliant SSE producer normally terminates every field with a newline,
+    # but accepting a final unterminated line is useful for short-lived streams
+    # and costs nothing.  Flush the incremental decoder first so malformed UTF-8
+    # is reported rather than replaced silently.
+    buf += decoder.decode(b"", final=True)
+    if buf:
+        line = buf.rstrip("\r")
+        if line.startswith("event: "):
+            current_event = line[7:]
+        elif line.startswith("data: ") and current_event is not None:
+            data_str = line[6:]
+            if data_str.strip() == "[DONE]":
+                return
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                _log.warning("Failed to parse SSE data: %s", data_str[:200])
+            else:
+                event = _parse_event(current_event, data)
+                if event is not None:
+                    yield event
 
 
 def _normalize_event_type(event_type: str) -> str:

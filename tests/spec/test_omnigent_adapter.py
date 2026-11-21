@@ -550,6 +550,21 @@ def test_function_tool_parameters_derived_from_callable_signature(
     )
 
 
+def test_callable_schema_resolves_postponed_primitive_annotations() -> None:
+    """Postponed primitive annotations must retain their JSON types."""
+    from omnigent.inner.tools import _schema_from_callable
+
+    def typed(count: int, enabled: bool, ratio: float) -> None:
+        return None
+
+    schema = _schema_from_callable(typed)
+    assert schema["properties"] == {
+        "count": {"type": "integer"},
+        "enabled": {"type": "boolean"},
+        "ratio": {"type": "number"},
+    }
+
+
 # ── Fail-loud: each unsupported concept gets its own test ─────
 
 

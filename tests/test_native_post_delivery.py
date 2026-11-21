@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -649,6 +650,49 @@ async def test_retry_loop_success_clears_a_prior_connectivity_failure() -> None:
         assert health.recent_post_failure(60.0) is None
     finally:
         health.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_source_id", [False, True])
+async def test_ambiguous_item_retry_requires_server_idempotency_key(has_source_id: bool) -> None:
+    """Only source-idempotent items may retry after an ambiguous transport failure."""
+    from omnigent.native._native_post_delivery import post_session_event_with_retry
+
+    class _FailThenSucceed:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def post(self, url: str, *, json: object) -> httpx.Response:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout(
+                    "response lost after send", request=httpx.Request("POST", url)
+                )
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+    client = _FailThenSucceed()
+    data: dict[str, object] = {"item_type": "message"}
+    if has_source_id:
+        data["source_id"] = "agy:test-stable-id"
+
+    response = await post_session_event_with_retry(
+        client=client,  # type: ignore[arg-type]
+        url="/v1/sessions/conv_x/events",
+        payload={"type": "external_conversation_item", "data": data},
+        event_type="external_conversation_item",
+        max_attempts=2,
+        retry_status_codes=frozenset(),
+        sleep=lambda _delay: asyncio.sleep(0),
+        retry_delay=lambda _attempt: 0.0,
+        logger_name="test.native_post_delivery",
+    )
+
+    if has_source_id:
+        assert response is not None and response.status_code == 200
+        assert client.calls == 2
+    else:
+        assert response is None
+        assert client.calls == 1
 
 
 @pytest.mark.asyncio

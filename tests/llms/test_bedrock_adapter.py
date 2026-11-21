@@ -440,6 +440,74 @@ def test_stream_usage_chunk_structure() -> None:
     assert chunk["usage"]["total_tokens"] == 15
 
 
+@pytest.mark.asyncio
+async def test_stream_converse_emits_complete_tool_call_deltas() -> None:
+    """Bedrock streaming toolUse events map to OpenAI-compatible tool chunks."""
+    from omnigent.llms.adapters.bedrock import _stream_converse
+
+    class _Client:
+        def converse_stream(self, **_kwargs):
+            return {
+                "stream": [
+                    {
+                        "contentBlockStart": {
+                            "contentBlockIndex": 2,
+                            "start": {
+                                "toolUse": {"toolUseId": "tool-1", "name": "lookup"}
+                            },
+                        }
+                    },
+                    {
+                        "contentBlockDelta": {
+                            "contentBlockIndex": 2,
+                            "delta": {"toolUse": {"input": '{"city":'}},
+                        }
+                    },
+                    {
+                        "contentBlockDelta": {
+                            "contentBlockIndex": 2,
+                            "delta": {"toolUse": {"input": '"Paris"}'}},
+                        }
+                    },
+                    {"messageStop": {"stopReason": "tool_use"}},
+                ]
+            }
+
+    chunks = [c async for c in _stream_converse(_Client(), {"modelId": "model"})]
+    start = chunks[0]["choices"][0]["delta"]["tool_calls"][0]
+    assert start["id"] == "tool-1"
+    assert start["function"]["name"] == "lookup"
+    argument_chunks = [
+        c["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+        for c in chunks
+        if c["choices"][0]["delta"].get("tool_calls")
+        and "arguments" in c["choices"][0]["delta"]["tool_calls"][0]["function"]
+    ]
+    assert "".join(argument_chunks) == '{"city":"Paris"}'
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_stream_converse_raises_provider_stream_errors() -> None:
+    """Bedrock event-stream exceptions must not be treated as successful EOF."""
+    from omnigent.llms.adapters.bedrock import _stream_converse
+
+    class _Client:
+        def converse_stream(self, **_kwargs):
+            return {
+                "stream": [
+                    {"contentBlockDelta": {"delta": {"text": "partial"}}},
+                    {"modelStreamErrorException": {"message": "provider failed"}},
+                ]
+            }
+
+    stream = _stream_converse(_Client(), {"modelId": "model"})
+    first = await anext(stream)
+    assert first["choices"][0]["delta"]["content"] == "partial"
+    with pytest.raises(RuntimeError, match="Bedrock streaming error: provider failed"):
+        await anext(stream)
+
+
 # ── None content becomes empty blocks ────────────────────
 
 

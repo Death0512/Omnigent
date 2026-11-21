@@ -28,9 +28,6 @@
 # Both images publish multi-arch (linux/amd64 + linux/arm64) — see
 # .github/workflows/oss-publish-images.yml — so they run natively on
 # arm64 hosts (Apple Silicon laptops, arm64 clusters) as well as amd64.
-# Nothing below is arch-specific: the python/node base images are
-# multi-arch and apt/pip/npm/COPY-from-node all resolve per-arch under
-# buildx. Only web-builder is pinned to $BUILDPLATFORM (see that stage).
 # Amd64-only consumers (Modal, Daytona, CoreWeave) keep pulling the
 # amd64 variant from the manifest list, unchanged.
 #
@@ -62,42 +59,6 @@
 # Must satisfy pyproject requires-python (>=3.12); 3.11 fails dependency resolution.
 ARG PYTHON_VERSION=3.12
 ARG NODE_VERSION=22
-
-# ── Web UI builder ──────────────────────────────────────
-# Builds the web SPA so `docker build` works from a clean checkout —
-# no separate `cd web && npm run build` step, no "SPA bundle missing"
-# hard-fail. vite.config emits to ../omnigent/server/static/web-ui
-# (relative to web/), so from /web/web the bundle lands at
-# /web/omnigent/server/static/web-ui, which the server builder overlays.
-# Server-only: the host target never reaches this stage.
-#
-# Pinned to the build host's platform: the bundle is arch-independent
-# (plain JS/CSS/HTML), and vite's native bundler has stalled indefinitely
-# at "rendering chunks" under QEMU arm64 emulation, timing out releases.
-#
-# Behind a corporate npm proxy, pass it through:
-#   --build-arg NPM_CONFIG_REGISTRY=https://npm-proxy.example.com
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-slim AS web-builder
-ARG NPM_CONFIG_REGISTRY=
-ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org}
-# pnpm 11 uses PNPM_CONFIG_ settings; npm uses NPM_CONFIG_.
-ENV PNPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}
-WORKDIR /web
-
-# Workspace manifests + lockfile first so the install layer caches across pure
-# source edits. The electron package JSON is included so the root workspace is
-# structurally complete, but we --filter web to avoid downloading Electron.
-COPY pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY patches/ ./patches/
-COPY web/package.json ./web/
-COPY web/electron/package.json ./web/electron/
-
-RUN npm install -g pnpm@11.15.1
-RUN pnpm install --frozen-lockfile --filter web
-
-COPY web/ ./web/
-ARG VITE_OMNIGENT_HOST_ROUTING=false
-RUN pnpm --filter web run build
 
 # ── Python builder (shared: server + host) ──────────────
 # Installs the package (and its transitive native-extension deps) into
@@ -150,18 +111,12 @@ ENV VIRTUAL_ENV=/opt/venv \
 RUN uv pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} -e .
 
 # ── Server builder ──────────────────────────────────────
-# Server-only additions on top of the shared builder: the SPA bundle
-# and the Postgres driver.
+# Server-only additions on top of the shared builder. This checkout ships
+# the API-only server; the optional web distribution is supplied separately
+# through OMNIGENT_WEB_UI_DIST when a deployment has a built frontend.
 FROM builder AS server-builder
 
 ARG PYPI_INDEX_URL=https://pypi.org/simple
-
-# Overlay the SPA bundle built in the web-builder stage, so a clean
-# checkout (with no prebuilt bundle on the host) still produces a
-# complete image. This replaces the old "prebuild or hard-fail" check.
-COPY --from=web-builder /web/omnigent/server/static/web-ui ./omnigent/server/static/web-ui
-RUN test -f ./omnigent/server/static/web-ui/index.html \
-    || (echo "ERROR: SPA bundle missing after web-builder stage — check the web build." && exit 1)
 
 # psycopg[binary] is not a baseline dep — pulled in by the
 # [databricks] extra in pyproject — so add it explicitly here.

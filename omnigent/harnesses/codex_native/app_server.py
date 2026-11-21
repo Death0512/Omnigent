@@ -195,9 +195,9 @@ _TRUSTED_HOOK_STATUSES = frozenset({"trusted", "managed"})
 # Minimum codex CLI version whose ``hooks/list`` returns the
 # ``currentHash`` / ``trustStatus`` fields the trust handshake needs.
 # Below this codex never exposes those fields, so the policy hook can
-# never be trusted (it just stays ``untrusted`` and is silently skipped)
-# — we detect the old version up front and skip registration with a loud
-# warning rather than crash startup on an un-trustable hook.
+# never be trusted (it just stays ``untrusted`` and is silently skipped).
+# We detect the old version up front and refuse startup rather than expose
+# a session with an unenforced policy boundary.
 _MIN_POLICY_HOOK_CODEX_VERSION = (0, 129, 0)
 # Minimum codex CLI version that accepts ``--dangerously-bypass-hook-trust``.
 # Older binaries exit immediately on the unknown flag, so below this floor
@@ -2532,14 +2532,11 @@ class CodexNativeAppServer:
     :param python_executable: Python executable the policy hook command
         runs, e.g. ``"/path/to/.venv/bin/python"``. ``None`` uses
         :data:`sys.executable`.
-    :param policy_hook_disabled_reason: Runtime field set by
-        :meth:`start`: ``None`` when the tool-call policy hook is active
-        (registered + trusted), or a human-readable reason string when it
-        is NOT enforced for this session — codex too old, or the trust
-        handshake failed. Hook problems are non-fatal (fail-open): the
-        session still starts and this reason is surfaced as a web-UI
-        notice rather than blocking session creation. Not a constructor
-        input — defaults ``None`` until ``start``.
+    :param policy_hook_disabled_reason: Runtime diagnostic for an explicitly
+        disabled hook, or ``None`` while the required tool-call policy hook is
+        active. Supported native sessions fail closed before becoming usable
+        when registration or trust fails. Not a constructor input — defaults
+        ``None`` until ``start``.
     :param pinned_model: Session-pinned model id written into the
         per-session ``config.toml`` at start, or ``None``. Keeps the
         forwarder's config.toml model mirror (and the cost gate's hook
@@ -2805,37 +2802,36 @@ class CodexNativeAppServer:
             app_server_command=self.app_server_command,
         )
         if codex_version is not None and not policy_hooks_supported:
-            self._disable_policy_hook(
+            raise RuntimeError(
                 f"Codex CLI {_format_codex_version(codex_version)} is older than "
                 f"{_format_codex_version(_MIN_POLICY_HOOK_CODEX_VERSION)}; upgrade "
-                "codex to enforce tool-call policies."
+                "codex to start a session with tool-call policy enforcement."
             )
-        else:
-            # Register the Omnigent policy hook in this private CODEX_HOME
-            # *before* launching the app-server so codex discovers it at
-            # config load. The Omnigent coordinates the hook subprocess
-            # needs go in the bridge dir's policy_hook.json; without
-            # ap_server_url the hook is still registered + trusted but
-            # no-ops.
-            _write_codex_policy_hooks_file(
-                self.codex_home,
+        # Register the Omnigent policy hook in this private CODEX_HOME
+        # *before* launching the app-server so codex discovers it at
+        # config load. The Omnigent coordinates the hook subprocess
+        # needs go in the bridge dir's policy_hook.json; without
+        # ap_server_url the hook is still registered + trusted but
+        # no-ops.
+        _write_codex_policy_hooks_file(
+            self.codex_home,
+            self.bridge_dir,
+            self.python_executable,
+            router_bridge_dir=router_bridge_dir,
+            router_session_id=codex_router_session_id(self.env),
+            user_hooks_source=config_source / _CODEX_HOOKS_FILE,
+            # The runner only advertises a route-turn endpoint for a
+            # session that launched with Smart Routing on, so its presence
+            # is the switch for the first-message routing hook. Same
+            # rendezvous-as-switch shape as the subagent router above.
+            turn_routing=_turn_router_advertised(self.bridge_dir),
+        )
+        if self.ap_server_url:
+            write_policy_hook_config(
                 self.bridge_dir,
-                self.python_executable,
-                router_bridge_dir=router_bridge_dir,
-                router_session_id=codex_router_session_id(self.env),
-                user_hooks_source=config_source / _CODEX_HOOKS_FILE,
-                # The runner only advertises a route-turn endpoint for a
-                # session that launched with Smart Routing on, so its presence
-                # is the switch for the first-message routing hook. Same
-                # rendezvous-as-switch shape as the subagent router above.
-                turn_routing=_turn_router_advertised(self.bridge_dir),
+                ap_server_url=self.ap_server_url,
+                ap_auth_headers=self.ap_auth_headers or {},
             )
-            if self.ap_server_url:
-                write_policy_hook_config(
-                    self.bridge_dir,
-                    ap_server_url=self.ap_server_url,
-                    ap_auth_headers=self.ap_auth_headers or {},
-                )
         if self.reconcile_process_registry:
             reconcile_codex_native_process_registry()
         # Off the loop: sqlite reads plus, only when a lease is found, one
@@ -2872,9 +2868,9 @@ class CodexNativeAppServer:
         # ``start()`` returns.
         # Readiness failure (the app-server never came up) is fatal and
         # tears down the subprocess so it is not orphaned. Policy-hook
-        # trust, by contrast, is best-effort: a trust failure degrades the
-        # session to "no enforcement" with a surfaced reason rather than
-        # blocking session creation (fail-open). ``BaseException`` on the
+        # trust is mandatory for supported Codex versions: a trust failure
+        # aborts startup instead of running with an untrusted policy hook
+        # (fail-closed). ``BaseException`` on the
         # outer guard so a cancellation mid-trust still tears down.
         try:
             try:
@@ -2976,8 +2972,10 @@ class CodexNativeAppServer:
                 if self.policy_hook_disabled_reason is None:
                     try:
                         await self._trust_policy_hooks(client=startup_client)
-                    except Exception as exc:  # noqa: BLE001 - degrade, never block startup
-                        self._disable_policy_hook(f"Codex policy hook could not be trusted: {exc}")
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Codex policy hook could not be trusted: {exc}"
+                        ) from exc
             finally:
                 try:
                     await startup_client.close()
@@ -3066,8 +3064,8 @@ class CodexNativeAppServer:
         Mark the registered Omnigent policy hook as trusted.
 
         A freshly-written non-managed hook is ``untrusted`` and codex
-        silently skips untrusted hooks — for a policy gate that is a
-        fail-open. It reuses the initialized startup client when supplied;
+        silently skips untrusted hooks, so startup must verify trust before
+        exposing the session. It reuses the initialized startup client when supplied;
         direct callers get a transient client. The same ``hooks/list`` →
         ``config/batchWrite`` trust flow codex's own TUI uses then verifies
         the hook is trusted. ``--listen`` may be a unix socket (local CLI) or
@@ -3167,12 +3165,12 @@ class CodexNativeAppServer:
 
     def _disable_policy_hook(self, reason: str) -> None:
         """
-        Record that tool-call policy enforcement is inactive (fail-open).
+        Record that tool-call policy enforcement is inactive.
 
-        Single entry point used by :meth:`start` for both degrade paths
-        (codex too old, trust handshake failed). Stores the reason, flags
-        a one-shot web-UI notice for the runner's ensure handler to
-        surface, and logs (see :meth:`_warn_policy_hook_disabled`).
+        Retained for diagnostics for callers that intentionally disable policy
+        hooks (for example, an explicitly unsupported optional integration).
+        Native startup does not call this method for a required session: it
+        raises instead. Stores the reason and logs it.
 
         :param reason: Human-readable cause, e.g. ``"Codex CLI 0.128.0 is
             older than 0.129.0; upgrade codex to enforce tool-call
@@ -3187,9 +3185,8 @@ class CodexNativeAppServer:
         """
         Log that tool-call policy enforcement is inactive for this session.
 
-        Called by :meth:`start` when it degrades the session to "no
-        enforcement" — either codex is too old to trust the hook, or the
-        trust handshake failed. The reason is in
+        Called by an explicit optional-integration downgrade. Required native
+        sessions abort before reaching this path. The reason is in
         :attr:`policy_hook_disabled_reason`. When Omnigent coordinates are
         present (``ap_server_url`` set) enforcement was intended, so this
         is a loud ``warning``; otherwise nothing would have been enforced
@@ -4323,6 +4320,25 @@ def build_codex_native_server(
     # or context window, which govern the turns it runs.
     config_overrides.extend(codex_mcp_tool_approval_overrides(terminal_launch_args))
     config_overrides.extend(codex_model_window_overrides(terminal_launch_args))
+    # Do not inherit a dangerous or ambiguous policy from the user's shared
+    # CODEX_HOME. The private app-server must have an explicit safe baseline;
+    # an explicit launch policy (or the typed full-access opt-in below) remains
+    # authoritative. This mirrors the vendor's documented
+    # ``workspace-write`` + ``on-request`` baseline and keeps the TUI and
+    # app-server policies identical.
+    launch_policy = _codex_resume_permission_params(terminal_launch_args)
+    configured_keys = {
+        override.split("=", 1)[0].strip() for override in config_overrides if "=" in override
+    }
+    if not bypass_sandbox:
+        if "approvalPolicy" not in launch_policy and "approval_policy" not in configured_keys:
+            config_overrides.append('approval_policy="on-request"')
+        if (
+            "sandbox" not in launch_policy
+            and "permissions" not in launch_policy
+            and "sandbox_mode" not in configured_keys
+        ):
+            config_overrides.append('sandbox_mode="workspace-write"')
     if bypass_sandbox:
         # Mirror the --remote TUI's --dangerously-bypass-approvals-and-sandbox
         # on the app-server threads: never prompt for approval, and run

@@ -340,6 +340,7 @@ async def chat_stream_to_response_events(
     # tool_calls_by_index: {index: {"id": ..., "name": ..., "arguments": ...}}
     tool_calls_by_index: dict[int, dict[str, str]] = {}
     usage_dict: dict[str, Any] | None = None
+    saw_terminal_chunk = False
     # Tracks whether a reasoning.started event has been emitted for the
     # current reasoning run; reset when a text delta arrives (reasoning
     # is always prepended before the answer).
@@ -354,6 +355,9 @@ async def chat_stream_to_response_events(
             continue
 
         delta = choices[0].get("delta", {})
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason is not None:
+            saw_terminal_chunk = True
 
         # Top-level reasoning content (xAI Grok, DeepSeek) arrives as a sibling
         # ``reasoning_content`` string while ``content`` is null during the
@@ -405,6 +409,13 @@ async def chat_stream_to_response_events(
         # Capture usage from final chunk
         if chunk.get("usage"):
             usage_dict = chunk["usage"]
+
+    if not saw_terminal_chunk:
+        # A provider that closes a stream without a terminal finish marker may
+        # have dropped an error or been disconnected mid-response.  Returning
+        # a normal Response here would make a partial answer indistinguishable
+        # from a successful completion.
+        raise RuntimeError("Chat stream ended before a terminal finish_reason")
 
     # Assemble the final Response
     output: list[MessageOutput | FunctionCallOutput | NativeToolOutput] = []

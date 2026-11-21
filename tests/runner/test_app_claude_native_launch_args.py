@@ -119,14 +119,18 @@ def test_build_claude_native_base_args(
     CLI's command (wrong order, missing pass-through flag, or the model
     override clobbering an explicit user ``--model``).
     """
-    assert (
-        _build_claude_native_base_args(
-            reasoning_effort=reasoning_effort,
-            model_override=model_override,
-            terminal_launch_args=terminal_launch_args,
-        )
-        == expected
+    args = _build_claude_native_base_args(
+        reasoning_effort=reasoning_effort,
+        model_override=model_override,
+        terminal_launch_args=terminal_launch_args,
     )
+    explicit_mode = any(
+        arg == "--permission-mode"
+        or arg.startswith("--permission-mode=")
+        or arg == "--dangerously-skip-permissions"
+        for arg in expected
+    )
+    assert args == (expected if explicit_mode else (*expected, "--permission-mode", "manual"))
 
 
 @pytest.mark.parametrize(
@@ -278,16 +282,20 @@ def test_build_claude_native_base_args_resume_prefix(
     resume silently starts a fresh Claude session instead of reopening
     the prior transcript.
     """
-    assert (
-        _build_claude_native_base_args(
-            reasoning_effort=reasoning_effort,
-            model_override=model_override,
-            terminal_launch_args=terminal_launch_args,
-            resume_external_session_id=resume,
-            skip_initial_prompt=skip_initial_prompt,
-        )
-        == expected
+    args = _build_claude_native_base_args(
+        reasoning_effort=reasoning_effort,
+        model_override=model_override,
+        terminal_launch_args=terminal_launch_args,
+        resume_external_session_id=resume,
+        skip_initial_prompt=skip_initial_prompt,
     )
+    explicit_mode = any(
+        arg == "--permission-mode"
+        or arg.startswith("--permission-mode=")
+        or arg == "--dangerously-skip-permissions"
+        for arg in expected
+    )
+    assert args == (expected if explicit_mode else (*expected, "--permission-mode", "manual"))
 
 
 @pytest.mark.parametrize(
@@ -420,6 +428,26 @@ def test_build_claude_native_base_args_carries_pinned_permission_mode_into_resum
     )
 
 
+def test_build_claude_native_base_args_pins_manual_mode_without_override() -> None:
+    """A global bypassPermissions setting cannot silently govern a managed CLI."""
+    args = _build_claude_native_base_args(
+        reasoning_effort=None,
+        model_override=None,
+        terminal_launch_args=None,
+    )
+    assert args == ("--permission-mode", "manual")
+
+
+def test_build_claude_native_base_args_preserves_explicit_bypass() -> None:
+    """An explicit user bypass is not silently rewritten by the runner."""
+    args = _build_claude_native_base_args(
+        reasoning_effort=None,
+        model_override=None,
+        terminal_launch_args=["--dangerously-skip-permissions"],
+    )
+    assert args == ("--dangerously-skip-permissions",)
+
+
 def test_claude_terminal_env_unset_masks_credentials_with_api_key_helper() -> None:
     """Ambient keys and tokens must not override the selected helper."""
     config = ClaudeNativeUcodeConfig(
@@ -479,7 +507,7 @@ def test_native_launch_passes_synthesized_model_as_flag() -> None:
         model_override=None or config.model,
         terminal_launch_args=None,
     )
-    assert args == ("--model", "gateway-served-claude")
+    assert args == ("--model", "gateway-served-claude", "--permission-mode", "manual")
 
 
 def test_routed_launch_model_reaches_the_terminal_env_as_the_custom_slot() -> None:
@@ -512,7 +540,12 @@ def test_routed_launch_model_reaches_the_terminal_env_as_the_custom_slot() -> No
     )
     terminal_env = build_native_claude_terminal_env(launched)
 
-    assert args == ("--model", "databricks-claude-opus-4-8")
+    assert args == (
+        "--model",
+        "databricks-claude-opus-4-8",
+        "--permission-mode",
+        "manual",
+    )
     assert terminal_env["ANTHROPIC_CUSTOM_MODEL_OPTION"] == "databricks-claude-opus-4-8"
     assert (
         claude_model_command_arg(session_model_override, terminal_env)
@@ -645,7 +678,7 @@ def test_claude_terminal_env_databricks_gateway_helper_path() -> None:
         model_override=config.model,
         terminal_launch_args=None,
     )
-    assert args == ("--model", "databricks-claude-opus-4-8")
+    assert args == ("--model", "databricks-claude-opus-4-8", "--permission-mode", "manual")
     assert config.api_key_helper
 
 

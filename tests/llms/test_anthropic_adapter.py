@@ -744,14 +744,17 @@ async def test_stream_to_chat_chunks_tool_use() -> None:
         + ' "usage": {"input_tokens": 5}}}',
         "data: "
         + '{"type": "content_block_start",'
+        + ' "index": 0,'
         + ' "content_block": {"type": "tool_use",'
         + ' "id": "tu_1", "name": "get_weather"}}',
         "data: "
         + '{"type": "content_block_delta",'
+        + ' "index": 0,'
         + ' "delta": {"type": "input_json_delta",'
         + ' "partial_json": "{\\"city\\":"}}',
         "data: "
         + '{"type": "content_block_delta",'
+        + ' "index": 0,'
         + ' "delta": {"type": "input_json_delta",'
         + ' "partial_json": "\\"London\\"}"}}',
         "data: "
@@ -770,6 +773,32 @@ async def test_stream_to_chat_chunks_tool_use() -> None:
     tc = tool_start["choices"][0]["delta"]["tool_calls"][0]
     assert tc["id"] == "tu_1"
     assert tc["function"]["name"] == "get_weather"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_stream_error_raises_instead_of_returning_partial_answer() -> None:
+    """An upstream error after partial text must not look like a successful turn."""
+    from omnigent.llms.adapters.anthropic import _stream_to_chat_chunks
+
+    lines = [
+        'data: {"type":"message_start","message":{"id":"msg_err","model":"claude-test"}}',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}',
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"try again"}}',
+    ]
+
+    async def _aiter():
+        for line in lines:
+            yield line
+
+    chunks = _stream_to_chat_chunks(_aiter())
+    first = await anext(chunks)
+    assert first["choices"][0]["delta"]["content"] == "partial"
+    with pytest.raises(
+        RuntimeError,
+        match="Anthropic streaming error: overloaded_error: try again",
+    ):
+        await anext(chunks)
 
 
 @pytest.mark.asyncio

@@ -155,6 +155,7 @@ def test_claude_terminal_request_pins_launch_cwd(tmp_path, monkeypatch) -> None:
 
     args = spec["args"]
     assert args[:4] == ["--resume", "claude-session", "-p", "hi"]
+    assert args[args.index("--permission-mode") + 1] == "manual"
     mcp_index = args.index("--mcp-config")
     mcp_config = json.loads(args[mcp_index + 1])
     assert mcp_config["mcpServers"]["omnigent"]["args"] == [
@@ -170,6 +171,13 @@ def test_claude_terminal_request_pins_launch_cwd(tmp_path, monkeypatch) -> None:
     # goes through tmux send-keys.
     assert "--dangerously-load-development-channels" not in args
     settings = _load_invocation_settings(args)
+    assert settings["sandbox"] == {
+        "enabled": True,
+        "failIfUnavailable": True,
+        "allowUnsandboxedCommands": False,
+    }
+    assert settings["permissions"]["blockReadsOutsideWorkingDirectories"] is True
+    assert settings["permissions"]["blockWritesOutsideWorkingDirectories"] is True
     assert sorted(settings["hooks"]) == [
         "MessageDisplay",
         "PostToolUse",
@@ -580,6 +588,40 @@ def test_claude_terminal_request_preserves_user_model_arg(tmp_path, monkeypatch)
         "hi",
     ]
     assert args.count("--model") == 1
+
+
+def test_claude_terminal_request_preserves_explicit_permission_mode_and_sandbox(
+    tmp_path, monkeypatch
+) -> None:
+    """A session override survives while the invocation sandbox stays mandatory."""
+    body = claude_native._claude_terminal_request(
+        ("--permission-mode", "acceptEdits"),
+        command="claude",
+        bridge_dir=_test_bridge_dir(tmp_path, monkeypatch),
+    )
+    args = body["spec"]["args"]
+    assert args.count("--permission-mode") == 1
+    assert args[args.index("--permission-mode") + 1] == "acceptEdits"
+    settings = _load_invocation_settings(args)
+    assert settings["sandbox"]["enabled"] is True
+    assert settings["sandbox"]["failIfUnavailable"] is True
+    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
+
+
+def test_claude_terminal_request_explicit_bypass_cannot_disable_sandbox(
+    tmp_path, monkeypatch
+) -> None:
+    """An explicit bypass changes approvals only; the required shell sandbox remains."""
+    body = claude_native._claude_terminal_request(
+        ("--dangerously-skip-permissions",),
+        command="claude",
+        bridge_dir=_test_bridge_dir(tmp_path, monkeypatch),
+    )
+    args = body["spec"]["args"]
+    assert "--dangerously-skip-permissions" in args
+    settings = _load_invocation_settings(args)
+    assert settings["sandbox"]["enabled"] is True
+    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
 
 
 @pytest.mark.parametrize("gateway", [True, False])

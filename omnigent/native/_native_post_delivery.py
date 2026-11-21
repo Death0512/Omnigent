@@ -260,11 +260,10 @@ async def post_session_event_with_retry(
     POST a session event payload with bounded transient retries.
 
     Shared retry loop used by the antigravity (and optionally other)
-    native forwarders. Conversation items persist with a random primary
-    key and no server-side dedup, so an ambiguous transport failure
-    (request sent, response lost) is NOT retried — a re-post would
-    duplicate the item. Other event types are idempotent/transient and
-    are retried.
+    native forwarders. Conversation items that carry a stable ``source_id``
+    are idempotent at the server and may be retried after an ambiguous
+    transport failure. Legacy items without that key remain conservative and
+    are not retried because a re-post could duplicate the item.
 
     :param client: HTTP client for Omnigent event posts.
     :param url: Full request URL, e.g. ``"/v1/sessions/conv_x/events"``.
@@ -281,20 +280,29 @@ async def post_session_event_with_retry(
     :param logger_name: Logger name used for warning messages, e.g.
         ``"omnigent.harnesses.antigravity_native.reader"``.
     :returns: Final HTTP response, or ``None`` when all attempts raised
-        transport errors (or after an ambiguous conversation-item failure).
+        transport errors (or after an ambiguous legacy conversation-item
+        failure without a stable source id).
     """
     log = logging.getLogger(logger_name)
     for attempt in range(1, max_attempts + 1):
         try:
             response = await client.post(url, json=payload)
         except httpx.HTTPError as exc:
-            # Conversation items persist with a random primary key and no
-            # server-side dedup, so an ambiguous failure (request sent,
-            # response lost — the server may have committed it) must not
-            # be retried: a re-post would duplicate the item.
-            # Other event types are idempotent / transient, so retrying
-            # them on the same errors is safe and preserves delivery.
-            if event_type == "external_conversation_item" and post_may_have_been_delivered(exc):
+            # The events route derives a deterministic server-side id from
+            # ``data.source_id``.  Retry an ambiguous request only when that
+            # idempotency key is present; otherwise preserve the legacy
+            # no-duplicate behaviour by dropping the ambiguous request.
+            data = payload.get("data")
+            has_stable_source_id = (
+                isinstance(data, dict)
+                and isinstance(data.get("source_id"), str)
+                and bool(data["source_id"].strip())
+            )
+            if (
+                event_type == "external_conversation_item"
+                and post_may_have_been_delivered(exc)
+                and not has_stable_source_id
+            ):
                 log.warning(
                     "skipping session event after an ambiguous transport "
                     "failure (may already be committed); not retrying to avoid "
